@@ -1,60 +1,60 @@
-describe("speech playback beta feature", () => {
-  test("keeps speech playback disabled by default", () => {
-    // Given a user has not changed LuxTranslate speech settings
-    // When the plugin loads its default configuration
-    // Then speech playback is disabled
-    // And translation results do not expose speech playback actions
-    // And word pronunciation details are not shown
+describe("语音播放测试版功能", () => {
+  test("默认关闭语音播放功能", () => {
+    // Given 用户没有修改 LuxTranslate 的语音播放设置
+    // When 插件加载默认配置
+    // Then 语音播放功能处于关闭状态
+    // And 翻译结果不暴露语音播放动作
+    // And 不展示单词发音信息
   })
 
-  test("exposes speech playback settings only for the beta plugin experience", () => {
-    // Given the installed LuxTranslate package is the beta plugin experience
-    // When Wox renders the plugin setting definitions
-    // Then the speech playback setting is available to beta users
-    // And the setting clearly controls translation-result audio playback
-    // And non-beta plugin metadata does not advertise the feature
+  test("仅在测试版插件体验中公开语音播放设置", () => {
+    // Given 当前安装的 LuxTranslate 包是测试版插件体验
+    // When Wox 渲染插件设置定义
+    // Then 测试版用户可以看到语音播放设置
+    // And 该设置明确控制翻译结果的音频播放
+    // And 非测试版插件元数据不宣传该功能
   })
 
-  test("adds a play translation action when speech playback is enabled", () => {
-    // Given speech playback is enabled
-    // And a translation request succeeds
-    // When the translation result is built
-    // Then the result offers a play action for the translated text
-    // And the existing copy and retry actions remain available
-    // And the play action uses the translation target language for speech
+  test("启用语音播放后为翻译结果添加播放译文动作", () => {
+    // Given 语音播放功能已启用
+    // And 翻译请求成功
+    // When 构建翻译结果
+    // Then 结果提供播放译文的动作
+    // And 现有复制和重试动作仍然可用
+    // And 播放动作使用翻译目标语言朗读
   })
 
-  test("does not add a play translation action when speech playback is disabled", () => {
-    // Given speech playback is disabled
-    // And a translation request succeeds
-    // When the translation result is built
-    // Then the result does not offer any speech playback action
-    // And the existing translation result behavior is unchanged
+  test("关闭语音播放时不添加播放译文动作", () => {
+    // Given 语音播放功能已关闭
+    // And 翻译请求成功
+    // When 构建翻译结果
+    // Then 结果不提供任何语音播放动作
+    // And 现有翻译结果行为保持不变
   })
 
-  test("shows pronunciation details for single-word translation queries when enabled", () => {
-    // Given speech playback is enabled
-    // And the user translates a single word
-    // When the translation result is built
-    // Then the result includes pronunciation details for the word
-    // And the pronunciation follows the detected or configured source language
-    // And the result offers playback for the word pronunciation
+  test("启用语音播放后为单词翻译查询展示发音信息", () => {
+    // Given 语音播放功能已启用
+    // And 用户翻译的是单个单词
+    // When 构建翻译结果
+    // Then 结果包含该单词的发音信息
+    // And 发音信息遵循检测到或配置的源语言
+    // And 结果提供播放单词发音的动作
   })
 
-  test("does not show word pronunciation details for sentence translation queries", () => {
-    // Given speech playback is enabled
-    // And the user translates a phrase or sentence instead of a single word
-    // When the translation result is built
-    // Then the result does not include word-level pronunciation details
-    // And the result still offers playback for the translated text
+  test("句子翻译查询不展示单词级发音信息", () => {
+    // Given 语音播放功能已启用
+    // And 用户翻译的是短语或句子而不是单个单词
+    // When 构建翻译结果
+    // Then 结果不包含单词级发音信息
+    // And 结果仍然提供播放译文的动作
   })
 
-  test("handles speech playback failure without breaking the translation result", () => {
-    // Given speech playback is enabled
-    // And a translation result has already been displayed
-    // When the platform speech player cannot play the requested text
-    // Then the translation result remains visible
-    // And the failure is logged for diagnostics
-    // And no translation history entry is removed or changed
+  test("语音播放失败时不破坏翻译结果", () => {
+    // Given 语音播放功能已启用
+    // And 翻译结果已经展示
+    // When 平台语音播放器无法播放请求文本
+    // Then 翻译结果仍然保持可见
+    // And 播放失败会记录到诊断日志
+    // And 不会删除或修改任何翻译历史记录
   })
 })
