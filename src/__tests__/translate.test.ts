@@ -234,6 +234,7 @@ describe("query parsing", () => {
   test("parses visible provider lists", () => {
     expect(parseProviderList("microsoft,openai,deepseek,openai")).toEqual(["microsoft", "openai", "deepseek"])
     expect(parseProviderList(JSON.stringify(["deepl", "unknown"]))).toEqual(["deepl"])
+    expect(parseProviderList("openai_compatible,llm_custom")).toEqual(["llm_custom"])
     expect(parseProviderList("")).toEqual([])
   })
 
@@ -241,6 +242,7 @@ describe("query parsing", () => {
     const rows = [{ provider: "microsoft" }, { provider: "openai", apiKey: "openai-key", baseUrl: "https://example.com/v1", model: "model-a" }, { provider: "unknown" }]
     expect(parseProviderTableRows(JSON.stringify(rows))).toHaveLength(2)
     expect(parseProviderTableRows(JSON.stringify(rows))[1]).toMatchObject({ provider: "openai", apiKey: "openai-key", baseUrl: "https://example.com/v1", model: "model-a" })
+    expect(parseProviderTableRows(JSON.stringify([{ provider: "openai_compatible", apiKey: "custom-key" }]))).toEqual([{ provider: "llm_custom", apiKey: "custom-key" }])
   })
 })
 

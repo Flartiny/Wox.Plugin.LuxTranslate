@@ -151,6 +151,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 }
 
 export function normalizeProvider(value: string): TranslationProvider {
+  if (value === "openai_compatible") {
+    return "llm_custom"
+  }
   if (isTranslationProvider(value)) {
     return value
   }
@@ -198,7 +201,7 @@ export function parseProviderList(value: string): TranslationProvider[] {
     if (!isTranslationProvider(trimmed)) {
       continue
     }
-    const provider = trimmed
+    const provider = normalizeProvider(trimmed)
     if (!providers.includes(provider)) {
       providers.push(provider)
     }
@@ -217,7 +220,9 @@ export function parseProviderTableRows(value: string): ProviderTableRow[] {
       return []
     }
 
-    return (parsed as ProviderTableRow[]).filter(row => typeof row === "object" && row !== null && typeof row.provider === "string" && isTranslationProvider(row.provider))
+    return (parsed as ProviderTableRow[])
+      .filter(row => typeof row === "object" && row !== null && typeof row.provider === "string" && isTranslationProvider(row.provider))
+      .map(row => ({ ...row, provider: normalizeProvider(row.provider!) }))
   } catch {
     return []
   }
