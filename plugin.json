@@ -50,6 +50,8 @@
       "settings_history_limit_tip": "Maximum number of translation history entries to keep",
       "settings_show_preview_details": "Show source and provider details",
       "settings_show_preview_details_tip": "Show Source and Details sections in the result preview",
+      "settings_enable_speech_playback": "Show speech playback buttons",
+      "settings_enable_speech_playback_tip": "Add manual playback buttons to translation results. Speech never plays automatically.",
       "help_title": "Translate text",
       "help_subtitle": "Type tr hello, tr openai hello, tr claude hello, tr deepseek hello, or tr custom hello",
       "help_preview_command": "Command",
@@ -71,6 +73,7 @@
       "help_provider_source_target": "`tr ms en:zh hello` uses Microsoft, English → Chinese.",
       "action_copy_translation": "Copy translation",
       "action_copy_source": "Copy source text",
+      "action_play_translation": "Play translation",
       "action_retry_with": "Retry with",
       "preview_source": "Source",
       "preview_details": "Details",
@@ -141,6 +144,8 @@
       "settings_history_limit_tip": "最多保留多少条翻译历史记录",
       "settings_show_preview_details": "显示原文和服务详情",
       "settings_show_preview_details_tip": "在结果预览中显示 Source 和 Details 区块",
+      "settings_enable_speech_playback": "显示语音播放按钮",
+      "settings_enable_speech_playback_tip": "为翻译结果添加手动播放按钮。语音不会自动播放。",
       "help_title": "翻译文本",
       "help_subtitle": "输入 tr hello、tr openai hello、tr claude hello、tr deepseek hello 或 tr custom hello",
       "help_preview_command": "命令",
@@ -162,6 +167,7 @@
       "help_provider_source_target": "`tr ms en:zh hello` 使用 Microsoft，英文 → 中文。",
       "action_copy_translation": "复制译文",
       "action_copy_source": "复制原文",
+      "action_play_translation": "播放译文",
       "action_retry_with": "使用以下翻译源重试：",
       "preview_source": "原文",
       "preview_details": "详情",
@@ -618,6 +624,18 @@
         "Label": "i18n:settings_show_preview_details",
         "Tooltip": "i18n:settings_show_preview_details_tip",
         "DefaultValue": "true",
+        "Style": {
+          "Width": 320
+        }
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "enable_speech_playback",
+        "Label": "i18n:settings_enable_speech_playback",
+        "Tooltip": "i18n:settings_enable_speech_playback_tip",
+        "DefaultValue": "false",
         "Style": {
           "Width": 320
         }

@@ -56,6 +56,7 @@ export interface PluginSettings {
   openaiModel: string
   requestTimeoutMs: number
   showPreviewDetails: boolean
+  enableSpeechPlayback: boolean
   historyLimit: number
 }
 
@@ -147,6 +148,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   openaiModel: "gpt-4o-mini",
   requestTimeoutMs: 10000,
   showPreviewDetails: true,
+  enableSpeechPlayback: false,
   historyLimit: 10
 }
 

@@ -1,4 +1,5 @@
 import { ActionContext, Context, Plugin, PluginInitParams, PublicAPI, Query, Result, WoxImage } from "@wox-launcher/wox-plugin"
+import { speakText } from "./speech"
 import {
   DEFAULT_SETTINGS,
   getMissingConfiguration,
@@ -43,6 +44,7 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
   const historyLimitRaw = await getSetting(ctx, "history_limit", String(DEFAULT_SETTINGS.historyLimit))
   const historyLimit = Number.parseInt(historyLimitRaw, 10)
   const showPreviewDetails = (await getSetting(ctx, "show_preview_details", String(DEFAULT_SETTINGS.showPreviewDetails))) === "true"
+  const enableSpeechPlayback = (await getSetting(ctx, "enable_speech_playback", String(DEFAULT_SETTINGS.enableSpeechPlayback))) === "true"
   const noSetupProviderTableValue = await getSetting(ctx, "no_setup_provider_table", "")
   const llmProviderTableValue = await getSetting(ctx, "llm_provider_table", "")
   const visibleProviders = parseProviderList(await getSetting(ctx, "visible_providers", DEFAULT_SETTINGS.visibleProviders.join(",")))
@@ -64,6 +66,7 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
     openaiModel: await getSetting(ctx, "openai_model", DEFAULT_SETTINGS.openaiModel),
     requestTimeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_SETTINGS.requestTimeoutMs,
     showPreviewDetails,
+    enableSpeechPlayback,
     historyLimit: Number.isFinite(historyLimit) && historyLimit >= 0 ? historyLimit : DEFAULT_SETTINGS.historyLimit
   }
 }
@@ -216,7 +219,14 @@ function errorMessageForProvider(error: unknown, provider: TranslationProvider):
   return `${message}${suffix}`
 }
 
-async function buildResultActions(ctx: Context, translatedText: string, sourceText: string, provider: TranslationProvider): Promise<Result["Actions"]> {
+async function buildResultActions(
+  ctx: Context,
+  translatedText: string,
+  sourceText: string,
+  provider: TranslationProvider,
+  settings: PluginSettings,
+  targetLanguage: LanguageCode
+): Promise<Result["Actions"]> {
   const actions: Result["Actions"] = [
     {
       Name: await t(ctx, "action_copy_translation"),
@@ -232,6 +242,19 @@ async function buildResultActions(ctx: Context, translatedText: string, sourceTe
       }
     }
   ]
+
+  if (settings.enableSpeechPlayback) {
+    actions.push({
+      Name: await t(ctx, "action_play_translation"),
+      Action: async (ctx: Context) => {
+        try {
+          await speakText(translatedText, targetLanguage)
+        } catch (error) {
+          await api.Log(ctx, "Error", error instanceof Error ? error.stack || error.message : String(error))
+        }
+      }
+    })
+  }
 
   for (const alternate of ["microsoft", "youdao", "caiyun", "openai", "claude", "deepseek", "llm_custom"] as TranslationProvider[]) {
     if (alternate === provider) {
@@ -365,7 +388,7 @@ async function buildTranslationResult(
         Text: fromHistory ? await t(ctx, "subtitle_history") : providerDisplayName(entry.provider)
       }
     ],
-    Actions: await buildResultActions(ctx, entry.translatedText, sourceText, entry.provider)
+    Actions: await buildResultActions(ctx, entry.translatedText, sourceText, entry.provider, settings, entry.targetLanguage)
   }
 }
 
