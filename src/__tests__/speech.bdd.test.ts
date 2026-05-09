@@ -1,5 +1,3 @@
-/// <reference types="jest" />
-
 describe("语音播放测试版功能", () => {
   test("默认关闭语音播放功能", () => {
     // SN-001
