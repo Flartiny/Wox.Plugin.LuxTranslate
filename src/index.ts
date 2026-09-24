@@ -370,7 +370,7 @@ async function startStreamingTranslation(
 
   const updateResult = async (text: string, isFinal: boolean) => {
     const now = Date.now()
-    if (!isFinal && now - lastUpdateTime < UPDATE_INTERVAL_MS) return
+    if (!isFinal && now - lastUpdateTime < UPDATE_INTERVAL_MS) return true
     lastUpdateTime = now
 
     const sanitized = collapseExtraBlankLines(text)

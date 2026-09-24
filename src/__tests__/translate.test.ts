@@ -522,6 +522,7 @@ function sseErrorResponse(status: number, body: unknown): Response {
 }
 
 describe("streaming translation", () => {
+  const originalFetch = global.fetch
   let tokens: string[]
   let completed: string | null
   let errors: Error[]
@@ -545,7 +546,7 @@ describe("streaming translation", () => {
   })
 
   afterEach(() => {
-    global.fetch = (global as unknown as { fetch: typeof fetch }).fetch
+    global.fetch = originalFetch
   })
 
   test("streams OpenAI SSE tokens and completes", async () => {
@@ -664,5 +665,136 @@ describe("streaming translation", () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0].message).toContain("timed out")
+  })
+})
+
+describe("streaming regressions", () => {
+  const originalFetch = global.fetch
+  const request = {
+    text: "hello",
+    direction: resolveLanguageDirection("hello", "auto", "zh"),
+    settings: { ...DEFAULT_SETTINGS, openaiApiKey: "test", requestTimeoutMs: 50 }
+  }
+  const providers = [
+    {
+      name: "OpenAI",
+      run: (callbacks: StreamCallbacks) => translateWithOpenAICompatibleStream(request, "OpenAI", callbacks),
+      token: (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`
+    },
+    {
+      name: "Claude",
+      run: (callbacks: StreamCallbacks) => translateWithClaudeStream(request, callbacks),
+      token: (text: string) => `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } })}\n\n`
+    }
+  ]
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    jest.useRealTimers()
+  })
+
+  test.each(providers)("$name awaits token and completion callbacks in order", async ({ run, token }) => {
+    global.fetch = jest.fn(async () => sseResponse([token("A") + token("B")]))
+    const events: string[] = []
+    const onError = jest.fn()
+    await run({
+      onToken: async value => {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        events.push(value)
+      },
+      onComplete: async value => {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        events.push(`done:${value}`)
+      },
+      onError
+    })
+    expect(events).toEqual(["A", "B", "done:AB"])
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  test.each(providers)("$name reports async callback rejection and cancels the stream", async ({ run, token }) => {
+    const cancel = jest.fn()
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(token("A") + token("B")))
+      },
+      cancel
+    })
+    global.fetch = jest.fn(async () => ({ ok: true, body }) as Response)
+    const onComplete = jest.fn()
+    const onError = jest.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    })
+    const failure = new SyntaxError("result no longer visible")
+    await run({
+      onToken: async () => {
+        throw failure
+      },
+      onComplete,
+      onError
+    })
+    expect(onError).toHaveBeenCalledWith(failure)
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(body.locked).toBe(false)
+  })
+
+  test.each(providers)("$name times out while waiting for headers", async ({ run }) => {
+    jest.useFakeTimers()
+    let signal: AbortSignal | null | undefined
+    global.fetch = jest.fn((_url, init) => {
+      signal = init?.signal
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true })
+      })
+    })
+    const onError = jest.fn()
+    const onComplete = jest.fn()
+    const pending = run({ onToken: jest.fn(), onComplete, onError })
+    await jest.advanceTimersByTimeAsync(50)
+    expect(signal?.aborted).toBe(true)
+    await pending
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  test.each(providers)("$name allows continued output beyond the header timeout", async ({ run, token }) => {
+    jest.useFakeTimers()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    let signal: AbortSignal | null | undefined
+    const body = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value
+      }
+    })
+    global.fetch = jest.fn(async (_url, init) => {
+      signal = init?.signal
+      return { ok: true, body } as Response
+    })
+    const onComplete = jest.fn()
+    const onError = jest.fn()
+    const pending = run({ onToken: jest.fn(), onComplete, onError })
+    for (const value of ["A", "B", "C"]) {
+      await jest.advanceTimersByTimeAsync(30)
+      controller.enqueue(new TextEncoder().encode(token(value)))
+    }
+    controller.close()
+    await pending
+    expect(signal?.aborted).toBe(false)
+    expect(onComplete).toHaveBeenCalledWith("ABC")
+    expect(onError).not.toHaveBeenCalled()
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  test.each(["\n\n", ""])("OpenAI rejects a mid-stream error, including trailing data (%j)", async ending => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([providers[0].token("partial"), `data: ${JSON.stringify({ error: { message: "upstream failed" }, choices: [{ delta: {}, finish_reason: "error" }] })}${ending}`])
+    )
+    const onComplete = jest.fn()
+    const onError = jest.fn()
+    await providers[0].run({ onToken: jest.fn(), onComplete, onError })
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "OpenAI returned an error: upstream failed" }))
   })
 })
