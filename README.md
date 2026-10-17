@@ -4,14 +4,15 @@
 
 > **测试版声明**：当前插件仍属于测试版本，尚未经过充分测试。如有严重 bug，我先道歉；也欢迎在 GitHub Issues 反馈给我，我会尽快修复。
 
-LuxTranslate 是一个面向 [Wox](https://github.com/Wox-launcher/Wox) 的翻译插件。它提供 `tr` 触发词，默认自动判断中英文方向：检测到中文时翻译为英文，其他文本默认翻译为中文。
+LuxTranslate 是一个面向 [Wox](https://github.com/Wox-launcher/Wox) 的翻译插件。它提供 `tr` 触发词，根据 Wox 的界面语言和配对语言自动判断翻译方向。中文界面默认将中文翻译为英文，其他语言翻译为中文，也可以手动指定源语言和目标语言。
 
 ## 功能
 
 - 默认 `tr <text>` 快速翻译，回车复制译文。
 - 支持中文/英文方向的轻量自动识别。
 - 支持多翻译源同时展示结果。
-- 支持翻译历史缓存，避免重复请求 API。
+- 支持大模型流式输出，译文不完整时会明确提示。
+- 支持翻译历史缓存，更换模型或接口后重新请求，也可通过“重新翻译”跳过缓存。
 - 支持隐藏或显示结果预览里的原文、翻译源和方向详情。
 - 设置页按翻译源类型分组，API Key、Base URL 和模型可在表格行编辑中配置。
 
@@ -47,19 +48,20 @@ pnpm build
 
 ## 使用
 
-| 命令                | 说明                   |
-| ------------------- | ---------------------- |
-| `tr hello`          | 使用默认翻译源         |
-| `tr 你好`           | 自动翻译为英文         |
-| `tr ms hello`       | 强制使用 Microsoft     |
-| `tr youdao hello`   | 强制使用有道           |
-| `tr caiyun hello`   | 强制使用彩云           |
-| `tr openai hello`   | 强制使用 OpenAI        |
-| `tr claude hello`   | 强制使用 Claude        |
-| `tr deepseek hello` | 强制使用 DeepSeek      |
-| `tr custom hello`   | 强制使用通用大模型接口 |
-| `tr history`        | 查看最近翻译历史       |
-| `tr history hello`  | 搜索翻译历史           |
+| 命令                | 说明                           |
+| ------------------- | ------------------------------ |
+| `tr hello`          | 使用默认翻译源                 |
+| `tr 你好`           | 自动翻译为英文                 |
+| `tr ms hello`       | 强制使用 Microsoft             |
+| `tr youdao hello`   | 强制使用有道                   |
+| `tr caiyun hello`   | 强制使用彩云                   |
+| `tr openai hello`   | 强制使用 OpenAI                |
+| `tr claude hello`   | 强制使用 Claude                |
+| `tr deepseek hello` | 强制使用 DeepSeek              |
+| `tr custom hello`   | 强制使用通用大模型接口         |
+| `tr ms en:ja hello` | 使用 Microsoft，英文翻译为日文 |
+| `tr history`        | 查看最近翻译历史               |
+| `tr history hello`  | 搜索翻译历史                   |
 
 ### 使用小技巧
 
@@ -68,11 +70,13 @@ pnpm build
 ## 配置
 
 - `默认翻译源`：普通 `tr <text>` 使用的翻译源。
-- `同时显示翻译源`：选择多个翻译源后，同一次查询会展示多条结果。
+- `同时显示翻译源`：分别勾选需要显示的翻译源，同一次查询会展示多条结果。全部取消勾选时，只使用默认翻译源；旧版本的选择会自动保留。
 - `免配置翻译源`：管理 Microsoft、有道、彩云等无需手动 API Key 的翻译源。
 - `大模型翻译源`：配置 OpenAI、Claude、DeepSeek 或通用大模型的 API Key、Base URL 和模型名。
 - `历史记录条数`：默认保留 10 条翻译历史。
 - `显示原文和服务详情`：控制预览中是否展示原文、provider 和语言方向。
+
+结果菜单支持“重新翻译”和切换翻译源，都会保留原文及语言方向。选中文本入口将整段原文作为文字处理，保留换行和缩进；选中 `history` 等单词也会正常翻译。
 
 ## 开发
 

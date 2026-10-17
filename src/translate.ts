@@ -68,6 +68,7 @@ export interface ParsedQuery {
   targetLanguage?: LanguageCode
   /** 用户通过 tr 指令指定的源语言，覆盖设置中的源语言 */
   sourceLanguage?: LanguageCode
+  forceRefresh?: boolean
 }
 
 export interface LanguageDirection {
@@ -99,6 +100,7 @@ export interface TranslationHistoryEntry {
   targetLanguage: LanguageCode
   detectedSourceLanguage?: string
   timestamp: number
+  configurationKey?: string
 }
 
 export interface ProviderTableRow {
@@ -261,12 +263,37 @@ export function parseHistoryEntries(value: string): TranslationHistoryEntry[] {
   }
 }
 
-export function historyKeyMatches(entry: TranslationHistoryEntry, provider: TranslationProvider, sourceText: string, direction: LanguageDirection): boolean {
-  return entry.provider === provider && entry.sourceText === sourceText && entry.sourceLanguage === direction.sourceLanguage && entry.targetLanguage === direction.targetLanguage
+export function historyKeyMatches(entry: TranslationHistoryEntry, provider: TranslationProvider, sourceText: string, direction: LanguageDirection, configurationKey?: string): boolean {
+  return (
+    entry.provider === provider &&
+    entry.sourceText === sourceText &&
+    entry.sourceLanguage === direction.sourceLanguage &&
+    entry.targetLanguage === direction.targetLanguage &&
+    entry.configurationKey === configurationKey
+  )
 }
 
 function sameHistoryEntry(left: TranslationHistoryEntry, right: TranslationHistoryEntry): boolean {
-  return left.provider === right.provider && left.sourceText === right.sourceText && left.sourceLanguage === right.sourceLanguage && left.targetLanguage === right.targetLanguage
+  return (
+    left.provider === right.provider &&
+    left.sourceText === right.sourceText &&
+    left.sourceLanguage === right.sourceLanguage &&
+    left.targetLanguage === right.targetLanguage &&
+    left.configurationKey === right.configurationKey
+  )
+}
+
+export function isLanguageModelProvider(provider: TranslationProvider): boolean {
+  return ["openai", "claude", "deepseek", "llm_custom", "openai_compatible"].includes(provider)
+}
+
+export function translationConfigurationKey(provider: TranslationProvider, settings: PluginSettings): string | undefined {
+  if (!isLanguageModelProvider(provider)) return undefined
+  // Model, endpoint, and account changes must not reuse another configuration's translation.
+  // Hash the inputs so history never stores a second copy of the credential.
+  return createHash("sha256")
+    .update(JSON.stringify([provider, settings.openaiBaseUrl.replace(/\/+$/, ""), settings.openaiModel, settings.openaiApiKey]))
+    .digest("hex")
 }
 
 export function trimHistoryEntries(entries: TranslationHistoryEntry[], historyLimit: number): TranslationHistoryEntry[] {
@@ -310,6 +337,7 @@ export function parseTranslationQuery(search: string, defaultProvider: Translati
   let forcedProvider = false
   let targetLanguage: LanguageCode | undefined
   let sourceLanguage: LanguageCode | undefined
+  let forceRefresh = false
 
   // 1. 检查第一个单词是否是翻译源别名
   const first = words[0].toLowerCase()
@@ -317,6 +345,11 @@ export function parseTranslationQuery(search: string, defaultProvider: Translati
   if (providerAlias) {
     provider = providerAlias
     forcedProvider = true
+    idx++
+  }
+
+  if (words[idx] === "--refresh") {
+    forceRefresh = true
     idx++
   }
 
@@ -330,10 +363,15 @@ export function parseTranslationQuery(search: string, defaultProvider: Translati
     }
   }
 
-  // 3. 剩余部分为待翻译文本
-  const text = words.slice(idx).join(" ").trim()
+  // Only consume command tokens; splitting and joining the body destroys paragraphs and indentation.
+  let textStart = 0
+  for (let token = 0; token < idx; token++) {
+    const match = /^[^\s]+\s*/.exec(trimmed.slice(textStart))
+    textStart += match?.[0].length || 0
+  }
+  const text = trimmed.slice(textStart)
 
-  return { provider, text, forcedProvider, targetLanguage, sourceLanguage }
+  return { provider, text, forcedProvider, targetLanguage, sourceLanguage, forceRefresh }
 }
 
 /** 解析语言规格指令，支持格式：zh / :zh / en:zh / auto:zh */
@@ -353,7 +391,7 @@ export function parseLanguageSpec(word: string): { targetLanguage?: LanguageCode
     const left = colonParts[0]
     const right = colonParts[1]
     if (left === "auto" && isValidLanguageCode(right)) {
-      return { targetLanguage: right as LanguageCode }
+      return { sourceLanguage: "auto", targetLanguage: right as LanguageCode }
     }
     if (isValidLanguageCode(left) && isValidLanguageCode(right)) {
       return {
@@ -475,12 +513,54 @@ export function getMissingConfiguration(provider: TranslationProvider, settings:
 
 export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-
+  const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`)
+  let timeout = setTimeout(() => controller.abort(timeoutError), timeoutMs)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
-  } finally {
+    const response = await fetch(url, { ...init, signal: controller.signal })
+    if (!response.body) {
+      clearTimeout(timeout)
+      return response
+    }
+
+    // fetch resolves at the response headers. Keep the deadline until the body finishes,
+    // and reset it on each chunk so an active LLM stream can take longer than one interval.
+    const reader = response.body.getReader()
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        controller.signal.addEventListener(
+          "abort",
+          () => {
+            stream.error(timeoutError)
+            void reader.cancel(timeoutError).catch(() => undefined)
+          },
+          { once: true }
+        )
+      },
+      async pull(stream) {
+        try {
+          const chunk = await reader.read()
+          clearTimeout(timeout)
+          if (chunk.done) {
+            reader.releaseLock()
+            stream.close()
+          } else {
+            stream.enqueue(chunk.value)
+            timeout = setTimeout(() => controller.abort(timeoutError), timeoutMs)
+          }
+        } catch (error) {
+          clearTimeout(timeout)
+          stream.error(controller.signal.aborted ? timeoutError : error)
+        }
+      },
+      async cancel(reason) {
+        clearTimeout(timeout)
+        await reader.cancel(reason).catch(() => undefined)
+      }
+    })
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers })
+  } catch (error) {
     clearTimeout(timeout)
+    throw controller.signal.aborted ? timeoutError : error
   }
 }
 
@@ -655,9 +735,8 @@ export async function translateWithYoudao(request: TranslationRequest): Promise<
 
 function caiyunTranslationType(direction: LanguageDirection): string {
   // 彩云只支持中英双向
-  if (direction.sourceLanguage === "zh") return "zh2en"
-  if (direction.sourceLanguage === "en") return "en2zh"
-  return direction.targetLanguage === "zh" ? "auto2zh" : "auto2en"
+  if (direction.targetLanguage === "zh") return direction.sourceLanguage === "en" ? "en2zh" : "auto2zh"
+  return direction.sourceLanguage === "zh" ? "zh2en" : "auto2en"
 }
 
 function caiyunCrypt(ifDecrypt = true): Record<string, string> {
@@ -817,9 +896,10 @@ export async function translateWithOpenAICompatible(request: TranslationRequest,
     request.settings.requestTimeoutMs
   )
   const json = (await parseJsonResponse(response, providerName)) as {
-    choices?: Array<{ message?: { content?: string } }>
+    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
   }
   const translatedText = requireString(json.choices?.[0]?.message?.content, `${providerName} provider returned an empty translation.`)
+  validateCompletionReason(json.choices?.[0]?.finish_reason, translatedText)
 
   return {
     translatedText,
@@ -851,6 +931,7 @@ export async function translateWithClaude(request: TranslationRequest): Promise<
   )
   const json = (await parseJsonResponse(response, "Claude")) as {
     content?: Array<{ type?: string; text?: string }>
+    stop_reason?: string
   }
   const translatedText = requireString(
     json.content
@@ -860,6 +941,7 @@ export async function translateWithClaude(request: TranslationRequest): Promise<
       .trim(),
     "Claude provider returned an empty translation."
   )
+  validateCompletionReason(json.stop_reason, translatedText)
 
   return {
     translatedText,
@@ -867,7 +949,123 @@ export async function translateWithClaude(request: TranslationRequest): Promise<
   }
 }
 
-export async function translateText(provider: TranslationProvider, request: TranslationRequest): Promise<TranslationResponse> {
+export class IncompleteTranslationError extends Error {
+  constructor(
+    message: string,
+    readonly partialText: string
+  ) {
+    super(message)
+    this.name = "IncompleteTranslationError"
+    Object.setPrototypeOf(this, IncompleteTranslationError.prototype)
+  }
+}
+
+export type TranslationProgress = (text: string) => Promise<void>
+
+function validateCompletionReason(reason: string | undefined, text: string): void {
+  if (reason && !["stop", "end_turn", "stop_sequence"].includes(reason)) {
+    throw new IncompleteTranslationError(`Translation incomplete: the model stopped before finishing (${reason}).`, text)
+  }
+}
+
+async function translateLanguageModelStream(provider: TranslationProvider, request: TranslationRequest, onProgress: TranslationProgress): Promise<TranslationResponse> {
+  const isClaude = provider === "claude"
+  const providerName = isClaude ? "Claude" : provider === "deepseek" ? "DeepSeek" : provider === "openai" ? "OpenAI" : "Custom LLM"
+  const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
+  const prompt = buildTranslationPrompt(request.text, request.direction.targetLabel)
+  const response = await fetchWithTimeout(
+    `${baseUrl}/${isClaude ? "messages" : "chat/completions"}`,
+    {
+      method: "POST",
+      headers: isClaude
+        ? { "x-api-key": request.settings.openaiApiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
+        : { Authorization: `Bearer ${request.settings.openaiApiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(
+        isClaude
+          ? {
+              model: request.settings.openaiModel,
+              system: prompt[0].Text,
+              messages: [{ role: "user", content: request.text }],
+              max_tokens: 2048,
+              temperature: 0.1,
+              stream: true
+            }
+          : {
+              model: request.settings.openaiModel,
+              messages: prompt.map(message => ({ role: message.Role, content: message.Text })),
+              temperature: 0.1,
+              stream: true
+            }
+      )
+    },
+    request.settings.requestTimeoutMs
+  )
+
+  if (!response.ok) throw new Error(`${providerName} request failed with ${response.status}: ${await response.text()}`)
+  if (!response.body) throw new Error(`${providerName} returned an empty response body.`)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let fullText = ""
+  let completed = false
+  const consumeEvent = async (event: string) => {
+    const data = event
+      .split(/\r?\n/)
+      .filter(line => line.startsWith("data:"))
+      .map(line => line.slice(5).trim())
+      .join("\n")
+      .trim()
+    if (!data) return
+    if (data === "[DONE]") {
+      completed = true
+      return
+    }
+    const message = JSON.parse(data) as {
+      error?: { message?: string } | string
+      type?: string
+      delta?: { type?: string; text?: string; stop_reason?: string }
+      choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
+    }
+    if (message.error || message.type === "error") {
+      throw new Error(typeof message.error === "string" ? message.error : message.error?.message || `${providerName} returned a stream error.`)
+    }
+    const token = isClaude ? (message.type === "content_block_delta" ? message.delta?.text : undefined) : message.choices?.[0]?.delta?.content
+    if (typeof token === "string" && token !== "") {
+      fullText += token
+      await onProgress(fullText)
+    }
+    const reason = isClaude ? message.delta?.stop_reason : message.choices?.[0]?.finish_reason
+    // A partial response is not a successful translation, even when the socket closes cleanly.
+    validateCompletionReason(reason, fullText)
+    if (reason === "stop" || reason === "end_turn" || reason === "stop_sequence" || message.type === "message_stop") completed = true
+  }
+
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true })
+      const events = buffer.split(/\r?\n\r?\n/)
+      buffer = events.pop() || ""
+      for (const event of events) await consumeEvent(event)
+      if (chunk.done) break
+    }
+    if (buffer.trim()) await consumeEvent(buffer)
+    if (!completed) throw new IncompleteTranslationError("Translation incomplete: the connection ended before the completion marker.", fullText)
+    return { translatedText: requireString(fullText, `${providerName} returned an empty translation.`), providerName }
+  } catch (error) {
+    if (fullText && !(error instanceof IncompleteTranslationError) && error instanceof Error && error.message !== "Query no longer visible") {
+      throw new IncompleteTranslationError(`Translation incomplete: ${error.message}`, fullText)
+    }
+    throw error
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
+
+export async function translateText(provider: TranslationProvider, request: TranslationRequest, onProgress?: TranslationProgress): Promise<TranslationResponse> {
+  if (onProgress && isLanguageModelProvider(provider)) return translateLanguageModelStream(provider, request, onProgress)
   if (provider === "microsoft") {
     return translateWithMicrosoft(request)
   }

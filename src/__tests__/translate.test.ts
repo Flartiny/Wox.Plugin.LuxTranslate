@@ -193,7 +193,7 @@ describe("query parsing", () => {
       provider: "microsoft",
       text: "hello",
       targetLanguage: "zh",
-      sourceLanguage: undefined
+      sourceLanguage: "auto"
     })
     expect(parseTranslationQuery(":zh hello", "microsoft")).toMatchObject({
       provider: "microsoft",

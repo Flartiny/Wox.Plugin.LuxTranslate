@@ -4,7 +4,7 @@
   "Name": "i18n:plugin_name",
   "Description": "i18n:plugin_description",
   "Author": "stmluyuer",
-  "Version": "0.1.0",
+  "Version": "0.1.2",
   "MinWoxVersion": "2.0.0",
   "Runtime": "nodejs",
   "Website": "https://github.com/stmluyuer/LuxTranslate",
@@ -21,7 +21,7 @@
       "settings_provider": "Default provider",
       "settings_provider_tip": "Provider used by normal queries such as tr hello",
       "settings_visible_providers": "Visible providers",
-      "settings_visible_providers_tip": "Choose one or more providers to display together. Leave empty to show only the default provider.",
+      "settings_visible_providers_tip": "Check the providers to display together. Leave all unchecked to use only the default provider.",
       "settings_no_setup_provider_table": "No-setup providers",
       "settings_no_setup_provider_table_tip": "Providers that do not need manual API keys. Use Visible providers above to choose which providers are shown together.",
       "settings_llm_provider_table": "Large language model providers",
@@ -101,7 +101,11 @@
       "lang_ru": "Russian",
       "lang_ar": "Arabic",
       "lang_fr": "French",
-      "lang_de": "German"
+      "lang_de": "German",
+      "action_retranslate": "Translate again",
+      "translating_title": "Translating...",
+      "translation_failed_title": "Translation failed",
+      "translation_incomplete_title": "Translation incomplete"
     },
     "zh_CN": {
       "plugin_name": "LuxTranslate",
@@ -115,7 +119,7 @@
       "settings_provider": "默认翻译源",
       "settings_provider_tip": "普通查询（如 tr hello）使用的翻译源",
       "settings_visible_providers": "同时显示翻译源",
-      "settings_visible_providers_tip": "选择一个或多个翻译源同时展示。留空则只显示默认翻译源。",
+      "settings_visible_providers_tip": "勾选需要同时显示的翻译源。全部取消勾选时，只使用默认翻译源。",
       "settings_no_setup_provider_table": "免配置翻译源",
       "settings_no_setup_provider_table_tip": "不需要手动填写 API Key 的翻译源。要选择同时显示哪些翻译源，请使用上方的“同时显示翻译源”。",
       "settings_llm_provider_table": "大模型翻译源",
@@ -195,7 +199,11 @@
       "lang_ru": "俄语",
       "lang_ar": "阿拉伯语",
       "lang_fr": "法语",
-      "lang_de": "德语"
+      "lang_de": "德语",
+      "action_retranslate": "重新翻译",
+      "translating_title": "正在翻译…",
+      "translation_failed_title": "翻译失败",
+      "translation_incomplete_title": "译文不完整"
     }
   },
   "Entry": "index.js",
@@ -263,46 +271,72 @@
       }
     },
     {
-      "Type": "select",
+      "Type": "head",
       "Value": {
-        "Key": "visible_providers",
-        "Label": "i18n:settings_visible_providers",
+        "Content": "i18n:settings_visible_providers"
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_microsoft",
+        "Label": "i18n:provider_microsoft",
         "Tooltip": "i18n:settings_visible_providers_tip",
-        "DefaultValue": "",
-        "IsMulti": true,
-        "Options": [
-          {
-            "Label": "i18n:provider_microsoft",
-            "Value": "microsoft"
-          },
-          {
-            "Label": "i18n:provider_youdao",
-            "Value": "youdao"
-          },
-          {
-            "Label": "i18n:provider_caiyun",
-            "Value": "caiyun"
-          },
-          {
-            "Label": "i18n:provider_openai",
-            "Value": "openai"
-          },
-          {
-            "Label": "i18n:provider_claude",
-            "Value": "claude"
-          },
-          {
-            "Label": "i18n:provider_deepseek",
-            "Value": "deepseek"
-          },
-          {
-            "Label": "i18n:provider_custom_llm",
-            "Value": "llm_custom"
-          }
-        ],
-        "Style": {
-          "Width": 420
-        }
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_youdao",
+        "Label": "i18n:provider_youdao",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_caiyun",
+        "Label": "i18n:provider_caiyun",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_openai",
+        "Label": "i18n:provider_openai",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_claude",
+        "Label": "i18n:provider_claude",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_deepseek",
+        "Label": "i18n:provider_deepseek",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "visible_provider_llm_custom",
+        "Label": "i18n:provider_custom_llm",
+        "Tooltip": "i18n:settings_visible_providers_tip",
+        "DefaultValue": ""
       }
     },
     {

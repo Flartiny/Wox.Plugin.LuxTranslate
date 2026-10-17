@@ -4,20 +4,21 @@
 
 > **Beta Notice**: This plugin is still a test version and has not been fully tested. If you run into a serious bug, I apologize in advance. Please report it through GitHub Issues and I will fix it as soon as I can.
 
-LuxTranslate is a translation plugin for [Wox](https://github.com/Wox-launcher/Wox). It uses the `tr` trigger keyword and detects the default direction automatically: Chinese text is translated to English, while other text is translated to Chinese by default.
+LuxTranslate is a translation plugin for [Wox](https://github.com/Wox-launcher/Wox). It uses the `tr` trigger keyword and chooses the direction from Wox's UI language and the configured pair language. With a Chinese UI, Chinese text defaults to English and other languages default to Chinese. You can also specify source and target languages explicitly.
 
 ## Features
 
 - Quick translation with `tr <text>` and Enter-to-copy result actions.
 - Lightweight Chinese/English direction detection.
 - Multiple providers displayed in the same query.
-- Translation history cache to avoid repeated API calls.
+- Streaming LLM translations, with a clear warning for incomplete output.
+- Translation history cache that changes with the model or endpoint, plus a Translate again action to bypass it.
 - Optional preview details for source text, provider, and language direction.
 - Provider settings grouped by category, with API keys, base URLs, and models configured from editable table rows.
 
 ## Providers
 
-LuxTranslate groups providers into three categories:
+LuxTranslate groups providers into two categories:
 
 | Category              | Providers                                                   |
 | --------------------- | ----------------------------------------------------------- |
@@ -59,6 +60,7 @@ The build output is written to `dist/`. `make package` creates `wox.plugin.luxtr
 | `tr claude hello`   | Force Claude                       |
 | `tr deepseek hello` | Force DeepSeek                     |
 | `tr custom hello`   | Force the custom LLM endpoint      |
+| `tr ms en:ja hello` | Use Microsoft, English to Japanese |
 | `tr history`        | Show recent translation history    |
 | `tr history hello`  | Search translation history         |
 
@@ -69,11 +71,13 @@ LuxTranslate works well with Wox's built-in quick query feature. Bind a hotkey t
 ## Configuration
 
 - `Default provider`: provider used by normal `tr <text>` queries.
-- `Visible providers`: choose multiple providers to display several results at once.
+- `Visible providers`: check each provider to display together. Leave all unchecked to use only the default provider. Existing selections are preserved automatically.
 - `No-setup providers`: manage Microsoft, Youdao, and Caiyun-style providers.
 - `Large language model providers`: configure OpenAI-compatible API keys, base URLs, and model names for OpenAI, Claude, DeepSeek, or custom endpoints.
 - `History limit`: keeps 10 entries by default.
 - `Show source and provider details`: controls whether previews include source text, provider, and direction details.
+
+Result actions include Translate again and switching providers; both preserve the original text and language direction. Selection queries treat the entire selection as literal text and preserve line breaks and indentation, including words such as `history`.
 
 ## Development
 
