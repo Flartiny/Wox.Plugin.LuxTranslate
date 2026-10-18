@@ -53,7 +53,7 @@ The build output is written to `dist/`. `make package` creates `wox.plugin.luxtr
 
 | Command             | Description                        |
 | ------------------- | ---------------------------------- |
-| `tr hello`          | Use the default provider           |
+| `tr hello`          | Use selected providers, or the default |
 | `tr 你好`           | Translate to English automatically |
 | `tr ms hello`       | Force Microsoft                    |
 | `tr youdao hello`   | Force Youdao                       |
@@ -72,8 +72,10 @@ LuxTranslate works well with Wox's built-in quick query feature. Bind a hotkey t
 
 ## Configuration
 
-- `Default provider`: provider used by normal `tr <text>` queries.
-- `Visible providers`: open Filters beside the translation query box (`Ctrl+F`, or `Cmd+F` on macOS) to select several sources together. Results update and choices are saved automatically. Type `tr` without source text to configure providers first. Existing selections are preserved. Use the result action “Use default provider” to clear the multi-provider preference.
+The local 0.1.5 test build needs the Wox multi-select fix ([PR #4644](https://github.com/Wox-launcher/Wox/pull/4644)) for the settings dropdown. On Wox builds without the fix, continue selecting providers through Filters. Before publishing, set the minimum Wox version to a release that includes the fix.
+
+- `Default provider`: used by normal `tr <text>` queries when no providers are selected.
+- `Translation providers (multiple)`: the settings page and Filters in the translation window (`Ctrl+F`, or `Cmd+F` on macOS) share the same selection. Changes apply to the next query. Leave the selection empty to use the default provider, or choose “Use default provider” to clear it. Upgrading preserves the active filter selection; trial dropdown choices do not override it.
 - `No-setup providers`: manage Microsoft, Youdao, and Caiyun-style providers.
 - `Large language model providers`: configure OpenAI-compatible API keys, base URLs, and model names for OpenAI, Claude, DeepSeek, or custom endpoints.
 - `History limit`: keeps 10 entries by default.

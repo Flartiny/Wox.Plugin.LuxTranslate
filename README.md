@@ -50,20 +50,20 @@ pnpm build
 
 ## 使用
 
-| 命令                | 说明                           |
-| ------------------- | ------------------------------ |
-| `tr hello`          | 使用默认翻译源                 |
-| `tr 你好`           | 自动翻译为英文                 |
-| `tr ms hello`       | 强制使用 Microsoft             |
-| `tr youdao hello`   | 强制使用有道                   |
-| `tr caiyun hello`   | 强制使用彩云                   |
-| `tr openai hello`   | 强制使用 OpenAI                |
-| `tr claude hello`   | 强制使用 Claude                |
-| `tr deepseek hello` | 强制使用 DeepSeek              |
-| `tr custom hello`   | 强制使用通用大模型接口         |
-| `tr ms en:ja hello` | 使用 Microsoft，英文翻译为日文 |
-| `tr history`        | 查看最近翻译历史               |
-| `tr history hello`  | 搜索翻译历史                   |
+| 命令                | 说明                             |
+| ------------------- | -------------------------------- |
+| `tr hello`          | 使用已选来源，留空时使用默认来源 |
+| `tr 你好`           | 自动翻译为英文                   |
+| `tr ms hello`       | 强制使用 Microsoft               |
+| `tr youdao hello`   | 强制使用有道                     |
+| `tr caiyun hello`   | 强制使用彩云                     |
+| `tr openai hello`   | 强制使用 OpenAI                  |
+| `tr claude hello`   | 强制使用 Claude                  |
+| `tr deepseek hello` | 强制使用 DeepSeek                |
+| `tr custom hello`   | 强制使用通用大模型接口           |
+| `tr ms en:ja hello` | 使用 Microsoft，英文翻译为日文   |
+| `tr history`        | 查看最近翻译历史                 |
+| `tr history hello`  | 搜索翻译历史                     |
 
 ### 使用小技巧
 
@@ -71,8 +71,10 @@ pnpm build
 
 ## 配置
 
-- `默认翻译源`：普通 `tr <text>` 使用的翻译源。
-- `同时显示翻译源`：在翻译窗口点击查询框旁的“筛选”按钮（`Ctrl+F`，macOS 为 `Cmd+F`），展开后集中选择多个来源，结果会按选择更新并自动保存。输入 `tr` 而不输入原文时可以先配置来源；旧版本的选择会保留。要清除多源偏好，请在结果菜单中选择“使用默认翻译源”。
+本地 0.1.5 验证版的设置页多选依赖 Wox 的多选修复（[PR #4644](https://github.com/Wox-launcher/Wox/pull/4644)）。未包含修复的 Wox 请继续通过翻译窗口的“筛选”选择来源。正式发布前需将最低 Wox 版本调整为包含修复的发布版本。
+
+- `默认翻译源`：没有选择翻译源时，普通 `tr <text>` 查询使用的来源。
+- `翻译源（多选）`：设置页和翻译窗口的“筛选”（`Ctrl+F`，macOS 为 `Cmd+F`）共用同一份选择，修改后在下次查询时生效。留空时使用默认翻译源，也可通过“使用默认翻译源”操作清空选择。升级会保留原先实际使用的筛选选择，试用框里的选项不会覆盖它。
 - `免配置翻译源`：管理 Microsoft、有道、彩云等无需手动 API Key 的翻译源。
 - `大模型翻译源`：配置 OpenAI、Claude、DeepSeek 或通用大模型的 API Key、Base URL 和模型名。
 - `历史记录条数`：默认保留 10 条翻译历史。

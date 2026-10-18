@@ -29,8 +29,12 @@ let api: PublicAPI
 let woxLanguage: LanguageCode = "en"
 let historyWrites: Promise<void> = Promise.resolve()
 let providerWrites: Promise<void> = Promise.resolve()
+let lastProviderSelection = ""
+let providerRefinementId = "translation_providers"
 
 const HISTORY_SETTING_KEY = "translation_history"
+const PROVIDERS_SETTING_KEY = "visible_providers"
+const PROVIDERS_MIGRATED_KEY = "visible_providers_migrated"
 const VISIBLE_PROVIDERS: TranslationProvider[] = ["microsoft", "youdao", "caiyun", "openai", "claude", "deepseek", "llm_custom"]
 
 // The bundled SDK predates QueryResponse. Keep the supported Wox >= 2.0.4
@@ -63,20 +67,61 @@ async function getSetting(ctx: Context, key: string, fallback: string): Promise<
   }
 }
 
+function visibleProviderList(value: string): TranslationProvider[] {
+  return parseProviderList(value).filter(provider => VISIBLE_PROVIDERS.includes(provider))
+}
+
+async function migrateVisibleProviders(ctx: Context): Promise<void> {
+  if ((await getSetting(ctx, PROVIDERS_MIGRATED_KEY, "")) === "true") return
+  const legacy = visibleProviderList(await getSetting(ctx, PROVIDERS_SETTING_KEY, ""))
+  const enabled = await Promise.all(VISIBLE_PROVIDERS.map(provider => getSetting(ctx, `visible_provider_${provider}`, legacy.includes(provider) ? "true" : "false")))
+  const providers = VISIBLE_PROVIDERS.filter((_provider, index) => enabled[index] === "true")
+  await api.SaveSetting(ctx, PROVIDERS_SETTING_KEY, providers.join(","), false)
+  // Empty is a valid selection; remember migration separately so old switches
+  // cannot restore cleared choices on the next startup.
+  await api.SaveSetting(ctx, PROVIDERS_MIGRATED_KEY, "true", false)
+}
+
 async function saveVisibleProviders(ctx: Context, providers: TranslationProvider[]): Promise<void> {
-  // Serialize only preference writes: rapid chip clicks must not interleave the
-  // seven existing settings or overwrite the last complete selection.
   const write = providerWrites.then(async () => {
-    await Promise.all(
-      VISIBLE_PROVIDERS.map(async provider => {
-        const key = "visible_provider_" + provider
-        const value = String(providers.includes(provider))
-        if ((await getSetting(ctx, key, "")) !== value) await api.SaveSetting(ctx, key, value, false)
-      })
-    )
+    const value = providers.join(",")
+    await api.SaveSetting(ctx, PROVIDERS_SETTING_KEY, value, false)
+    lastProviderSelection = value
+    providerRefinementId = "translation_providers_" + randomUUID()
   })
   providerWrites = write.catch(() => undefined)
   await write
+}
+
+async function resolveVisibleProviders(ctx: Context, refinements?: Record<string, string>): Promise<{ providers: TranslationProvider[]; refinementId: string }> {
+  // Serialize reads and writes together so rapid filter queries observe the
+  // preceding save instead of mistaking it for an edit from the settings page.
+  const update = providerWrites.then(async () => {
+    const stored = await api.GetSetting(ctx, PROVIDERS_SETTING_KEY)
+    if (stored !== lastProviderSelection) {
+      // Wox retains query values by refinement ID. A new ID discards stale
+      // filters and lets the host apply the settings page's updated selection.
+      providerRefinementId = "translation_providers_" + randomUUID()
+      lastProviderSelection = stored
+    }
+    let providers = visibleProviderList(stored)
+    const selected = refinements?.[providerRefinementId]
+    if (typeof selected === "string") {
+      const next = visibleProviderList(selected)
+      if (next.length || selected.trim() === "") {
+        const value = next.join(",")
+        if (value !== stored) await api.SaveSetting(ctx, PROVIDERS_SETTING_KEY, value, false)
+        lastProviderSelection = value
+        providers = next
+      }
+    }
+    return { providers, refinementId: providerRefinementId }
+  })
+  providerWrites = update.then(
+    () => undefined,
+    () => undefined
+  )
+  return update
 }
 
 async function loadSettings(ctx: Context): Promise<PluginSettings> {
@@ -89,9 +134,7 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
   const enableSpeechPlayback = (await getSetting(ctx, "enable_speech_playback", String(DEFAULT_SETTINGS.enableSpeechPlayback))) === "true"
   const noSetupProviderTableValue = await getSetting(ctx, "no_setup_provider_table", "")
   const llmProviderTableValue = await getSetting(ctx, "llm_provider_table", "")
-  const legacyProviders = parseProviderList(await getSetting(ctx, "visible_providers", ""))
-  const enabled = await Promise.all(VISIBLE_PROVIDERS.map(provider => getSetting(ctx, `visible_provider_${provider}`, legacyProviders.includes(provider) ? "true" : "false")))
-  const visibleProviders = VISIBLE_PROVIDERS.filter((_provider, index) => enabled[index] === "true")
+  const visibleProviders = visibleProviderList(await getSetting(ctx, PROVIDERS_SETTING_KEY, ""))
 
   const targetLanguageRaw = await getSetting(ctx, "default_target_language", DEFAULT_SETTINGS.defaultTargetLanguage || "auto")
   const pairLanguageRaw = await getSetting(ctx, "pair_language", DEFAULT_SETTINGS.pairLanguage || "auto")
@@ -193,14 +236,14 @@ function desc(text: string): string {
   return text.replace(/^`[^`]+`\s*/, "")
 }
 
-async function buildProviderRefinement(ctx: Context, settings: PluginSettings): Promise<ProviderRefinement> {
+async function buildProviderRefinement(ctx: Context, settings: PluginSettings, refinementId: string): Promise<ProviderRefinement> {
   const labelKeys = ["provider_microsoft", "provider_youdao", "provider_caiyun", "provider_openai", "provider_claude", "provider_deepseek", "provider_custom_llm"]
   return {
-    Id: "translation_providers",
+    Id: refinementId,
     Title: await t(ctx, "refinement_provider_title"),
     Type: "multiSelect",
     Options: await Promise.all(VISIBLE_PROVIDERS.map(async (provider, index) => ({ Value: provider, Title: await t(ctx, labelKeys[index]) }))),
-    DefaultValue: settings.visibleProviders.length ? settings.visibleProviders : VISIBLE_PROVIDERS.filter(provider => provider === settings.defaultProvider),
+    DefaultValue: settings.visibleProviders,
     Hotkey: ""
   }
 }
@@ -599,13 +642,9 @@ export const plugin: Omit<Plugin, "query"> & { query: (ctx: Context, query: Tran
     api = initParams.API
     historyWrites = Promise.resolve()
     providerWrites = Promise.resolve()
-    // Preserve preferences from both the legacy multi-select and the 0.1.2
-    // switches. The query chips use the same stored settings after those switches are removed.
-    const legacyProviders = parseProviderList(await getSetting(ctx, "visible_providers", ""))
-    for (const provider of VISIBLE_PROVIDERS) {
-      const key = `visible_provider_${provider}`
-      if ((await getSetting(ctx, key, "")) === "") await api.SaveSetting(ctx, key, String(legacyProviders.includes(provider)), false)
-    }
+    await migrateVisibleProviders(ctx)
+    lastProviderSelection = await api.GetSetting(ctx, PROVIDERS_SETTING_KEY)
+    providerRefinementId = "translation_providers"
     // Detect Wox's selected UI language through plugin i18n.
     try {
       woxLanguage = normalizeWoxLanguageProbe(await api.GetTranslation(ctx, "language_probe"))
@@ -625,17 +664,11 @@ export const plugin: Omit<Plugin, "query"> & { query: (ctx: Context, query: Tran
     // Selection contents are literal data, even when they begin with a command alias.
     const parsed = query.Type === "selection" ? { provider: settings.defaultProvider, text: search, forcedProvider: false } : parseTranslationQuery(search, settings.defaultProvider)
 
-    const selected = query.Refinements?.translation_providers
-    if (!parsed.forcedProvider && typeof selected === "string") {
-      const providers = parseProviderList(selected).filter(provider => VISIBLE_PROVIDERS.includes(provider))
-      if (providers.length || selected.trim() === "") {
-        await saveVisibleProviders(ctx, providers)
-        settings.visibleProviders = providers
-      }
-    }
+    const selection = await resolveVisibleProviders(ctx, parsed.forcedProvider ? undefined : query.Refinements)
+    settings.visibleProviders = selection.providers
     // Explicit provider commands remain one-shot overrides; hiding the picker
     // avoids showing controls that would not affect those translation results.
-    const refinements = parsed.forcedProvider ? [] : [await buildProviderRefinement(ctx, settings)]
+    const refinements = parsed.forcedProvider ? [] : [await buildProviderRefinement(ctx, settings, selection.refinementId)]
     if (parsed.text === "") {
       const reset = await buildDefaultProviderAction(ctx)
       // Give reset its own explicit row. A sole help action becomes the

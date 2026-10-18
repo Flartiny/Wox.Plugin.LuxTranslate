@@ -134,7 +134,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     const response = await h.response("")
     // Then 新选择保留而旧的 DeepSeek 不再启用
     expect(response.Refinements[0].DefaultValue).toEqual(["microsoft", "youdao"])
-    expect(h.settings.visible_provider_deepseek).toBe("false")
+    expect(h.settings.visible_providers).toBe("microsoft,youdao")
   })
 
   test("取消部分来源后实际翻译只请求仍然选中的来源", async () => {
@@ -147,7 +147,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     expect(results).toHaveLength(1)
     expect(global.fetch).toHaveBeenCalledTimes(1)
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("youdao")
-    expect(h.settings.visible_provider_microsoft).toBe("false")
+    expect(h.settings.visible_providers).toBe("youdao")
   })
 
   test("恢复默认操作清除多源选择且重开时不复活旧偏好", async () => {
@@ -161,8 +161,8 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     await h.restart()
     const reopened = await h.response("")
     // Then 仅使用默认来源且旧偏好保持关闭
-    expect(reopened.Refinements[0].DefaultValue).toEqual(["microsoft"])
-    expect(h.settings.visible_provider_deepseek).toBe("false")
+    expect(reopened.Refinements[0].DefaultValue).toEqual([])
+    expect(h.settings.visible_providers).toBe("")
     expect(h.api.ChangeQuery).toHaveBeenCalledWith(ctx, { QueryType: "input", QueryText: "tr " })
   })
 
@@ -175,7 +175,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     // Then 只请求 Microsoft 且不修改保存的 DeepSeek 选择
     expect(response.Refinements).toEqual([])
     expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(h.settings.visible_provider_deepseek).toBe("true")
+    expect(h.settings.visible_providers).toBe("deepseek")
   })
 
   test("连续快速选择时保存最后一次完整选择", async () => {
@@ -186,7 +186,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     // Then 最后一次选择完整保存
     const response = await h.response("")
     expect(response.Refinements[0].DefaultValue).toEqual(["youdao"])
-    expect(h.settings.visible_provider_microsoft).toBe("false")
+    expect(h.settings.visible_providers).toBe("youdao")
   })
 
   test("在当前 Wox 中配置多个翻译源后实际按所选来源翻译", async () => {
@@ -200,7 +200,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     expect(global.fetch).toHaveBeenCalledTimes(2)
     const manifest = JSON.parse(readFileSync(join(__dirname, "../../plugin.json"), "utf8"))
     const fields = manifest.SettingDefinitions as Array<{ Type: string; Value: { Key?: string } }>
-    expect(fields.some(item => item.Type === "select" && item.Value.Key === "visible_providers")).toBe(false)
+    expect(fields.some(item => item.Type === "select" && item.Value.Key === "visible_providers")).toBe(true)
     expect(fields.filter(item => item.Type === "checkbox" && item.Value.Key?.startsWith("visible_provider_"))).toHaveLength(0)
   })
 
@@ -387,11 +387,9 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
   test("保留旧版本的多源选择且取消所有勾选后使用默认来源", async () => {
     // Given 旧版本保存了两个翻译源
     const h = await setup({ visible_providers: '["microsoft","youdao"]' })
-    expect(h.settings.visible_provider_microsoft).toBe("true")
-    expect(h.settings.visible_provider_youdao).toBe("true")
-    // When 用户在新界面取消所有勾选
-    h.settings.visible_provider_microsoft = "false"
-    h.settings.visible_provider_youdao = "false"
+    expect(h.settings.visible_providers).toBe("microsoft,youdao")
+    // When 用户在设置页清空选择
+    h.settings.visible_providers = ""
     global.fetch = jest.fn(async () => ms()) as typeof fetch
     await h.query("hello")
     // Then 不重新启用旧选择且只使用默认翻译源
