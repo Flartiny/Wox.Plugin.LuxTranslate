@@ -35,11 +35,13 @@ Notes:
 
 ## Installation
 
-The repository is prepared for Wox Store packaging. Publish a GitHub release with the generated `.wox` asset before submitting the store entry.
+Search for **LuxTranslate** in the Wox plugin store. You can also download `wox.plugin.luxtranslate.wox` from [GitHub Releases](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) and open it with Wox.
+
+To build from source:
 
 ```bash
-git clone https://github.com/stmluyuer/LuxTranslate.git
-cd LuxTranslate
+git clone https://github.com/stmluyuer/Wox.Plugin.LuxTranslate.git
+cd Wox.Plugin.LuxTranslate
 pnpm install
 pnpm build
 make package
@@ -71,7 +73,7 @@ LuxTranslate works well with Wox's built-in quick query feature. Bind a hotkey t
 ## Configuration
 
 - `Default provider`: provider used by normal `tr <text>` queries.
-- `Visible providers`: check each provider to display together. Leave all unchecked to use only the default provider. Existing selections are preserved automatically.
+- `Visible providers`: open Filters beside the translation query box (`Ctrl+F`, or `Cmd+F` on macOS) to select several sources together. Results update and choices are saved automatically. Type `tr` without source text to configure providers first. Existing selections are preserved. Use the result action “Use default provider” to clear the multi-provider preference.
 - `No-setup providers`: manage Microsoft, Youdao, and Caiyun-style providers.
 - `Large language model providers`: configure OpenAI-compatible API keys, base URLs, and model names for OpenAI, Claude, DeepSeek, or custom endpoints.
 - `History limit`: keeps 10 entries by default.

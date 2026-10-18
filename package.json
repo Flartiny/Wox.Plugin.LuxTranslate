@@ -1,12 +1,12 @@
 {
   "name": "lux-translate",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "license": "MIT",
   "packageManager": "pnpm@10.18.1",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stmluyuer/LuxTranslate.git"
+    "url": "git+https://github.com/stmluyuer/Wox.Plugin.LuxTranslate.git"
   },
   "scripts": {
     "lint": "eslint src",

@@ -47,7 +47,7 @@ async function queryTranslation(settings: Record<string, string> = {}) {
   await plugin.init({} as never, { API: api } as never)
   const results = await plugin.query({} as never, { Type: "input", Search: "hello" } as never)
 
-  return { api, result: results[0] }
+  return { api, result: results.Results[0] }
 }
 
 describe("speech playback actions", () => {

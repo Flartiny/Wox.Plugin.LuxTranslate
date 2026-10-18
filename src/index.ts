@@ -27,9 +27,26 @@ import {
 let api: PublicAPI
 let woxLanguage: LanguageCode = "en"
 let historyWrites: Promise<void> = Promise.resolve()
+let providerWrites: Promise<void> = Promise.resolve()
 
 const HISTORY_SETTING_KEY = "translation_history"
 const VISIBLE_PROVIDERS: TranslationProvider[] = ["microsoft", "youdao", "caiyun", "openai", "claude", "deepseek", "llm_custom"]
+
+// The bundled SDK predates QueryResponse. Keep the supported Wox >= 2.0.4
+// wire fields typed here without adding a runtime dependency or changing the host.
+type TranslationQuery = Query & { Refinements?: Record<string, string> }
+interface ProviderRefinement {
+  Id: string
+  Title: string
+  Type: "multiSelect"
+  Options: Array<{ Value: string; Title: string }>
+  DefaultValue: string[]
+  Hotkey: string
+}
+interface TranslationQueryResponse {
+  Results: Result[]
+  Refinements: ProviderRefinement[]
+}
 
 const PLUGIN_ICON: WoxImage = {
   ImageType: "relative",
@@ -45,7 +62,24 @@ async function getSetting(ctx: Context, key: string, fallback: string): Promise<
   }
 }
 
+async function saveVisibleProviders(ctx: Context, providers: TranslationProvider[]): Promise<void> {
+  // Serialize only preference writes: rapid chip clicks must not interleave the
+  // seven existing settings or overwrite the last complete selection.
+  const write = providerWrites.then(async () => {
+    await Promise.all(
+      VISIBLE_PROVIDERS.map(async provider => {
+        const key = "visible_provider_" + provider
+        const value = String(providers.includes(provider))
+        if ((await getSetting(ctx, key, "")) !== value) await api.SaveSetting(ctx, key, value, false)
+      })
+    )
+  })
+  providerWrites = write.catch(() => undefined)
+  await write
+}
+
 async function loadSettings(ctx: Context): Promise<PluginSettings> {
+  await providerWrites
   const timeoutRaw = await getSetting(ctx, "request_timeout_ms", String(DEFAULT_SETTINGS.requestTimeoutMs))
   const timeoutMs = Number.parseInt(timeoutRaw, 10)
   const historyLimitRaw = await getSetting(ctx, "history_limit", String(DEFAULT_SETTINGS.historyLimit))
@@ -158,12 +192,37 @@ function desc(text: string): string {
   return text.replace(/^`[^`]+`\s*/, "")
 }
 
-async function buildHelpResult(ctx: Context): Promise<Result> {
+async function buildProviderRefinement(ctx: Context, settings: PluginSettings): Promise<ProviderRefinement> {
+  const labelKeys = ["provider_microsoft", "provider_youdao", "provider_caiyun", "provider_openai", "provider_claude", "provider_deepseek", "provider_custom_llm"]
+  return {
+    Id: "translation_providers",
+    Title: await t(ctx, "refinement_provider_title"),
+    Type: "multiSelect",
+    Options: await Promise.all(VISIBLE_PROVIDERS.map(async (provider, index) => ({ Value: provider, Title: await t(ctx, labelKeys[index]) }))),
+    DefaultValue: settings.visibleProviders.length ? settings.visibleProviders : VISIBLE_PROVIDERS.filter(provider => provider === settings.defaultProvider),
+    Hotkey: ""
+  }
+}
+
+async function buildDefaultProviderAction(ctx: Context, queryText = "tr "): Promise<NonNullable<Result["Actions"]>[number]> {
+  return {
+    Name: await t(ctx, "action_use_default_provider"),
+    PreventHideAfterAction: true,
+    Action: async (ctx: Context) => {
+      await saveVisibleProviders(ctx, [])
+      // Replacing the query also clears the host's old refinement map. An empty
+      // multi-select otherwise reuses its defaults in Wox 2.4.7.
+      await api.ChangeQuery(ctx, { QueryType: "input", QueryText: queryText })
+    }
+  }
+}
+
+async function buildHelpResult(ctx: Context, settings: PluginSettings): Promise<Result> {
   const cmd = await t(ctx, "help_preview_command")
   const dsc = await t(ctx, "help_preview_description")
   return {
     Title: await t(ctx, "help_title"),
-    SubTitle: await t(ctx, "help_subtitle"),
+    SubTitle: `${await t(ctx, "help_provider_selection")} · ${await t(ctx, "selected_providers")}: ${(settings.visibleProviders.length ? settings.visibleProviders : [settings.defaultProvider]).map(providerDisplayName).join(", ")}`,
     Icon: PLUGIN_ICON,
     Score: 100,
     Preview: {
@@ -311,6 +370,7 @@ async function buildRetryActions(
     })
   }
 
+  actions.push(await buildDefaultProviderAction(ctx, `tr ${direction.sourceLanguage}:${direction.targetLanguage} ${sourceText}`))
   return actions
 }
 
@@ -532,12 +592,13 @@ function parseHistoryQuery(search: string): string | null {
   return match[2]?.trim() ?? ""
 }
 
-export const plugin: Plugin = {
+export const plugin: Omit<Plugin, "query"> & { query: (ctx: Context, query: TranslationQuery) => Promise<TranslationQueryResponse> } = {
   init: async (ctx: Context, initParams: PluginInitParams) => {
     api = initParams.API
     historyWrites = Promise.resolve()
-    // Wox 2.4.7's native select currently ignores IsMulti. Initialize independent
-    // checkbox preferences from the old comma/JSON list without changing existing choices.
+    providerWrites = Promise.resolve()
+    // Preserve preferences from both the legacy multi-select and the 0.1.2
+    // switches. The query chips use the same stored settings after those switches are removed.
     const legacyProviders = parseProviderList(await getSetting(ctx, "visible_providers", ""))
     for (const provider of VISIBLE_PROVIDERS) {
       const key = `visible_provider_${provider}`
@@ -552,22 +613,42 @@ export const plugin: Plugin = {
     await api.Log(ctx, "Info", `LuxTranslate initialized, Wox language: ${woxLanguage}`)
   },
 
-  query: async (ctx: Context, query: Query): Promise<Result[]> => {
+  query: async (ctx: Context, query: TranslationQuery): Promise<TranslationQueryResponse> => {
     const search = query.Type === "selection" ? query.Selection.Text : query.Search
     const settings = await loadSettings(ctx)
     const historySearch = query.Type === "selection" ? null : parseHistoryQuery(search)
     if (historySearch !== null) {
-      return buildHistoryResults(ctx, historySearch, settings)
+      return { Results: await buildHistoryResults(ctx, historySearch, settings), Refinements: [] }
     }
     // Selection contents are literal data, even when they begin with a command alias.
     const parsed = query.Type === "selection" ? { provider: settings.defaultProvider, text: search, forcedProvider: false } : parseTranslationQuery(search, settings.defaultProvider)
 
+    const selected = query.Refinements?.translation_providers
+    if (!parsed.forcedProvider && typeof selected === "string") {
+      const providers = parseProviderList(selected).filter(provider => VISIBLE_PROVIDERS.includes(provider))
+      if (providers.length || selected.trim() === "") {
+        await saveVisibleProviders(ctx, providers)
+        settings.visibleProviders = providers
+      }
+    }
+    // Explicit provider commands remain one-shot overrides; hiding the picker
+    // avoids showing controls that would not affect those translation results.
+    const refinements = parsed.forcedProvider ? [] : [await buildProviderRefinement(ctx, settings)]
     if (parsed.text === "") {
-      return [await buildHelpResult(ctx)]
+      const reset = await buildDefaultProviderAction(ctx)
+      // Give reset its own explicit row. A sole help action becomes the
+      // default Enter action in Wox and would silently erase preferences.
+      return {
+        Results: [
+          await buildHelpResult(ctx, settings),
+          { Title: reset.Name, SubTitle: (await t(ctx, "settings_provider")) + ": " + providerDisplayName(settings.defaultProvider), Icon: PLUGIN_ICON, Score: 90, Actions: [reset] }
+        ],
+        Refinements: refinements
+      }
     }
 
     const providers = parsed.forcedProvider || settings.visibleProviders.length === 0 ? [parsed.provider] : settings.visibleProviders
     const results = await Promise.all(providers.map((provider, index) => translateProviderResult(ctx, provider, parsed.text, settings, 100 - index, providers.length > 1, parsed, query)))
-    return results.filter((result): result is Result => result !== null)
+    return { Results: results.filter((result): result is Result => result !== null), Refinements: refinements }
   }
 }

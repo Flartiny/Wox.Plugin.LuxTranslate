@@ -35,11 +35,13 @@ LuxTranslate 将翻译源分为两类：
 
 ## 安装
 
-当前优先提供 GitHub 源码发布。Wox Store 发布会在后续准备。
+在 Wox 的插件商店搜索 **LuxTranslate** 安装。也可以从 [GitHub Releases](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) 下载 `wox.plugin.luxtranslate.wox`，在 Wox 中打开安装。
+
+从源码构建：
 
 ```bash
-git clone https://github.com/stmluyuer/LuxTranslate.git
-cd LuxTranslate
+git clone https://github.com/stmluyuer/Wox.Plugin.LuxTranslate.git
+cd Wox.Plugin.LuxTranslate
 pnpm install
 pnpm build
 ```
@@ -70,7 +72,7 @@ pnpm build
 ## 配置
 
 - `默认翻译源`：普通 `tr <text>` 使用的翻译源。
-- `同时显示翻译源`：分别勾选需要显示的翻译源，同一次查询会展示多条结果。全部取消勾选时，只使用默认翻译源；旧版本的选择会自动保留。
+- `同时显示翻译源`：在翻译窗口点击查询框旁的“筛选”按钮（`Ctrl+F`，macOS 为 `Cmd+F`），展开后集中选择多个来源，结果会按选择更新并自动保存。输入 `tr` 而不输入原文时可以先配置来源；旧版本的选择会保留。要清除多源偏好，请在结果菜单中选择“使用默认翻译源”。
 - `免配置翻译源`：管理 Microsoft、有道、彩云等无需手动 API Key 的翻译源。
 - `大模型翻译源`：配置 OpenAI、Claude、DeepSeek 或通用大模型的 API Key、Base URL 和模型名。
 - `历史记录条数`：默认保留 10 条翻译历史。
