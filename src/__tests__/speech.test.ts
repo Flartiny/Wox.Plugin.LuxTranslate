@@ -52,6 +52,16 @@ async function queryTranslation(settings: Record<string, string> = {}) {
 
 describe("speech playback actions", () => {
   const originalFetch = global.fetch
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
+
+  beforeAll(() => {
+    // These cases exercise Windows speech while CI itself runs on Linux.
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+  })
+
+  afterAll(() => {
+    Object.defineProperty(process, "platform", originalPlatform)
+  })
 
   afterEach(() => {
     global.fetch = originalFetch
