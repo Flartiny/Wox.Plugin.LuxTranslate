@@ -2,6 +2,7 @@ import { ActionContext, Context, Plugin, PluginInitParams, PublicAPI, Query, Res
 import { speakText } from "./speech"
 import { randomUUID } from "node:crypto"
 import {
+  collapseExtraBlankLines,
   DEFAULT_SETTINGS,
   getMissingConfiguration,
   historyKeyMatches,
@@ -375,12 +376,13 @@ async function buildRetryActions(
 }
 
 async function buildTranslationPreview(ctx: Context, translatedText: string, sourceText: string, providerName: string, direction: string, showDetails: boolean): Promise<string> {
+  const text = collapseExtraBlankLines(translatedText)
   if (!showDetails) {
-    return translatedText
+    return text
   }
 
   return [
-    translatedText,
+    text,
     "",
     "---",
     "",
@@ -509,7 +511,7 @@ async function translateProviderResult(
           lastUpdate = Date.now()
           const visible = await api.UpdateResult(ctx, {
             Id: resultId,
-            Preview: { PreviewType: "markdown", PreviewData: text, PreviewProperties: {} }
+            Preview: { PreviewType: "markdown", PreviewData: collapseExtraBlankLines(text), PreviewProperties: {} }
           })
           if (!visible) throw new Error("Query no longer visible")
         })
