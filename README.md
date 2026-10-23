@@ -1,4 +1,4 @@
-# LuxTranslate
+# <img src="images/app.svg" alt="" width="36" height="36"> LuxTranslate
 
 [中文](README.md) | [English](README.en.md)
 
@@ -8,9 +8,18 @@
 
 [下载测试版](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) · [反馈问题](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/issues)
 
-![基础翻译结果](screenshots/query-result.jpg)
+![输入文字与切换翻译源的操作演示](screenshots/translation-demo.gif)
 
-![多翻译源结果](screenshots/multi-provider-result.jpg)
+Wox v2.4.7 + LuxTranslate v0.1.4 的 10 秒演示：输入两句相关的英文，查看 Microsoft 的实际中文译文，再切换到有道；两次译文均来自服务的真实返回。
+
+<details>
+<summary>查看翻译结果</summary>
+
+![两句上下文翻译的实际结果](screenshots/context-translation.png)
+
+结果预览显示中文译文、完整原文和翻译来源。
+
+</details>
 
 ## 功能
 

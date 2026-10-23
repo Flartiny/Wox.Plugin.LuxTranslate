@@ -1,4 +1,4 @@
-# LuxTranslate
+# <img src="images/app.svg" alt="" width="36" height="36"> LuxTranslate
 
 [English](README.en.md) | [中文](README.md)
 
@@ -8,9 +8,18 @@ LuxTranslate is a translation plugin for [Wox](https://github.com/Wox-launcher/W
 
 [Download the beta](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) · [Report an issue](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/issues)
 
-![Basic translation result](screenshots/query-result.jpg)
+![Entering text and switching translation providers](screenshots/translation-demo.gif)
 
-![Multiple provider results](screenshots/multi-provider-result.jpg)
+This 10-second demo uses Wox v2.4.7 + LuxTranslate v0.1.4: enter two related English sentences, view Microsoft's actual Chinese translation, then switch to Youdao; both translations are real responses from the services.
+
+<details>
+<summary>View the translation result</summary>
+
+![Actual translation of two related sentences](screenshots/context-translation.png)
+
+The preview displays the Chinese translation, full source text, and provider.
+
+</details>
 
 ## Features
 
