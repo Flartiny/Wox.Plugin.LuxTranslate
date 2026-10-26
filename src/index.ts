@@ -236,6 +236,10 @@ function desc(text: string): string {
   return text.replace(/^`[^`]+`\s*/, "")
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 async function buildProviderRefinement(ctx: Context, settings: PluginSettings, refinementId: string): Promise<ProviderRefinement> {
   const labelKeys = ["provider_microsoft", "provider_youdao", "provider_caiyun", "provider_openai", "provider_claude", "provider_deepseek", "provider_custom_llm"]
   return {
@@ -480,7 +484,7 @@ async function translateProviderResult(
     return buildTranslationResult(ctx, historyEntry, sourceText, providerSettings, score, includeProviderInTitle, true)
   }
 
-  const finishTranslation = async (onProgress?: (text: string) => Promise<void>): Promise<Result> => {
+  const finishTranslation = async (onProgress?: (text: string) => Promise<void>, resultId?: string): Promise<Result> => {
     let translation = await translateText(
       provider,
       {
@@ -511,7 +515,8 @@ async function translateProviderResult(
       configurationKey
     }
     await saveHistoryEntry(ctx, entry, providerSettings.historyLimit)
-    return buildTranslationResult(ctx, entry, sourceText, providerSettings, score, includeProviderInTitle, false)
+    const result = await buildTranslationResult(ctx, entry, sourceText, providerSettings, score, includeProviderInTitle, false)
+    return resultId ? { ...result, Id: resultId } : result
   }
 
   const failureResult = async (error: unknown): Promise<Result> => {
@@ -532,40 +537,82 @@ async function translateProviderResult(
     }
   }
 
-  if (query && isLanguageModelProvider(provider) && typeof api.PushResults === "function") {
+  if (query && isLanguageModelProvider(provider) && typeof api.UpdateResult === "function") {
     const resultId = `lux-tr-${randomUUID()}`
+    const providerName = providerDisplayName(provider)
+    const placeholderTitle = await t(ctx, "translating_title")
     const placeholder: Result = {
       Id: resultId,
-      Title: await t(ctx, "translating_title"),
-      SubTitle: sourceText,
+      Title: includeProviderInTitle ? `${providerName}: ${placeholderTitle}` : placeholderTitle,
+      SubTitle: `${await t(ctx, "subtitle_source")}: ${sourceText}`,
       Icon: PLUGIN_ICON,
       Score: score,
       Actions: [],
-      Preview: { PreviewType: "markdown", PreviewData: await t(ctx, "translating_title"), PreviewProperties: {} }
+      Preview: { PreviewType: "markdown", PreviewData: placeholderTitle, PreviewProperties: {} }
     }
-    // Register the placeholder before the first token; updating an unregistered ID
-    // can otherwise cancel a fast stream, especially when another provider is slow.
-    if (!(await api.PushResults(ctx, query, [placeholder]))) return null
+
+    // The placeholder must travel in this query response. Wox replaces its result
+    // list with the final query snapshot, which only contains accepted result IDs;
+    // a placeholder pushed with PushResults during the query is dropped before the
+    // first token can update it. Return the row now and stream into it afterwards.
     const stream = async () => {
+      // Let this query response reach the host before the first UpdateResult.
+      await delay(0)
+      let lastUpdate = 0
+      let lastPreview = placeholderTitle
+      let updateErrorLogged = false
+
+      const update = async (patch: Partial<Result>): Promise<boolean> => {
+        try {
+          return await api.UpdateResult(ctx, { ...patch, Id: resultId })
+        } catch (error) {
+          // Retries can be frequent; keep the first host error and avoid log spam.
+          if (!updateErrorLogged) {
+            updateErrorLogged = true
+            await api.Log(ctx, "Warning", `LuxTranslate failed to update ${resultId}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          return false
+        }
+      }
+      const updatePreview = async (text: string) => {
+        const previewText = collapseExtraBlankLines(text)
+        if (previewText === lastPreview) return
+        lastPreview = previewText
+        // A failed preview update must not cancel the translation. Wox can still be
+        // applying the query response; later tokens and the final update retry.
+        await update({ Preview: { PreviewType: "markdown", PreviewData: previewText, PreviewProperties: {} } })
+      }
+      const replaceResult = async (next: Result): Promise<boolean> => {
+        // The query response holds this row, but a slow sibling provider can delay
+        // the snapshot that makes the row updatable. Retry for at least as long as
+        // one provider request may take instead of dropping the finished text.
+        const retryWindowMs = Math.min(15000, Math.max(2000, providerSettings.requestTimeoutMs))
+        const attempts = Math.max(16, Math.ceil(retryWindowMs / 120))
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          if (await update(next)) return true
+          await delay(120)
+        }
+        return false
+      }
+
       try {
-        let lastUpdate = 0
         const result = await finishTranslation(async text => {
           if (lastUpdate !== 0 && Date.now() - lastUpdate < 80) return
           lastUpdate = Date.now()
-          const visible = await api.UpdateResult(ctx, {
-            Id: resultId,
-            Preview: { PreviewType: "markdown", PreviewData: collapseExtraBlankLines(text), PreviewProperties: {} }
-          })
-          if (!visible) throw new Error("Query no longer visible")
-        })
-        await api.UpdateResult(ctx, { ...result, Id: resultId })
+          await updatePreview(text)
+        }, resultId)
+        if (!(await replaceResult(result))) {
+          await api.Log(ctx, "Warning", `LuxTranslate finished ${providerName} but its result is no longer visible.`)
+        }
       } catch (error) {
-        if (error instanceof Error && error.message === "Query no longer visible") return
-        await api.UpdateResult(ctx, { ...(await failureResult(error)), Id: resultId })
+        const failure = await failureResult(error)
+        if (!(await replaceResult(failure))) {
+          await api.Log(ctx, "Error", `LuxTranslate could not show the ${providerName} failure: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     }
     void stream().catch(error => api.Log(ctx, "Error", error instanceof Error ? error.message : String(error)))
-    return null
+    return placeholder
   }
 
   try {

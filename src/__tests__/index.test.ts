@@ -36,15 +36,69 @@ test("streaming UI skips throttled updates without cancelling translation", asyn
   try {
     await plugin.init(ctx, { API: api } as unknown as PluginInitParams)
     const response = await plugin.query(ctx, { Type: "input", Search: "openai hello" } as Query)
-    // The placeholder is registered before streaming; the returned response
-    // now carries refinements separately from the pushed results.
-    expect(response.Results).toEqual([])
-    expect(api.PushResults).toHaveBeenCalledTimes(1)
+    // The placeholder must be part of this query response. Wox replaces the result
+    // list with its final snapshot, which only contains accepted result IDs.
+    expect(response.Results).toHaveLength(1)
+    const placeholder = response.Results[0]
+    expect(placeholder.Id).toMatch(/^lux-tr-/)
+    expect(placeholder.Title).toBe("translating_title")
+    expect(api.PushResults).not.toHaveBeenCalled()
     resume()
     await finished
     expect(api.UpdateResult).toHaveBeenCalledTimes(2)
-    expect(api.UpdateResult).toHaveBeenLastCalledWith(ctx, expect.objectContaining({ Id: expect.any(String), Title: "AB" }))
+    expect(api.UpdateResult).toHaveBeenLastCalledWith(ctx, expect.objectContaining({ Id: placeholder.Id, Title: "AB" }))
     expect(api.SaveSetting).toHaveBeenCalledWith(ctx, "translation_history", expect.stringContaining('"translatedText":"AB"'), false)
+    expect(api.Log).not.toHaveBeenCalledWith(ctx, "Error", expect.anything())
+  } finally {
+    resume()
+    stream.mockRestore()
+    clock.mockRestore()
+  }
+})
+
+test("streaming keeps going when the host has not applied the result yet", async () => {
+  let resume!: () => void
+  const ready = new Promise<void>(resolve => {
+    resume = resolve
+  })
+  let finish!: () => void
+  const finished = new Promise<void>(resolve => {
+    finish = resolve
+  })
+  const stream = jest.spyOn(translate, "translateText").mockImplementation(async (_provider, _request, onProgress) => {
+    await ready
+    await onProgress?.("A")
+    await onProgress?.("AB")
+    return { translatedText: "AB", providerName: "OpenAI" }
+  })
+  const clock = jest.spyOn(Date, "now").mockReturnValue(1000)
+  const settings: Record<string, string> = { visible_providers: "openai", openai_api_key: "test" }
+  let updateCalls = 0
+  const api = {
+    GetSetting: jest.fn(async (_ctx: Context, key: string) => settings[key] || ""),
+    GetTranslation: jest.fn(async (_ctx: Context, key: string) => key),
+    PushResults: jest.fn(async () => true),
+    UpdateResult: jest.fn(async (_ctx: Context, result: Partial<Result>) => {
+      updateCalls++
+      const accepted = updateCalls > 3
+      if (accepted && result.Actions?.length) finish()
+      return accepted
+    }),
+    SaveSetting: jest.fn(async (_ctx: Context, key: string, value: string) => {
+      settings[key] = value
+    }),
+    Log: jest.fn(async () => undefined)
+  }
+  const ctx = {} as Context
+  try {
+    await plugin.init(ctx, { API: api } as unknown as PluginInitParams)
+    const [placeholder] = (await plugin.query(ctx, { Type: "input", Search: "openai hello" } as Query)).Results
+    resume()
+    await finished
+    // Early preview updates were rejected, but the final result was still retried
+    // instead of aborting with "Query no longer visible".
+    expect(api.UpdateResult).toHaveBeenCalledTimes(4)
+    expect(api.UpdateResult).toHaveBeenLastCalledWith(ctx, expect.objectContaining({ Id: placeholder.Id, Title: "AB" }))
     expect(api.Log).not.toHaveBeenCalledWith(ctx, "Error", expect.anything())
   } finally {
     resume()

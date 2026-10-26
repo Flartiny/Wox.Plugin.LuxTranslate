@@ -456,17 +456,21 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     }
   })
 
-  test("结果已经失效时不启动新的付费请求", async () => {
-    // Given 查询结果已不再接受新的占位项
+  test("大模型占位行随查询返回，不依赖 PushResults", async () => {
+    // Given 宿主会丢弃查询期间 PushResults 推入的结果
     const h = await setup({ llm_provider_table: rows() })
     h.api.PushResults.mockResolvedValue(false)
     global.fetch = jest.fn(async () => sse("译文")) as typeof fetch
-    // When 插件尝试启动大模型翻译
-    const results = await h.query("openai hello")
-    // Then 不发送请求且不写入历史
-    expect(results).toHaveLength(0)
-    expect(global.fetch).not.toHaveBeenCalled()
-    expect(h.history()).toHaveLength(0)
+    // When 插件启动大模型翻译
+    const [placeholder] = await h.query("openai hello")
+    // Then 占位行在查询响应中，最终译文仍能更新到同一行
+    expect(placeholder.Id).toMatch(/^lux-tr-/)
+    expect(placeholder.Title).toBe("translating_title")
+    expect(h.api.PushResults).not.toHaveBeenCalled()
+    const result = await h.finish(placeholder)
+    expect(result.Title).toBe("译文")
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(h.history()).toHaveLength(1)
   })
 
   test("服务识别出的实际源语言纠正纯汉字日文的自动方向", async () => {
