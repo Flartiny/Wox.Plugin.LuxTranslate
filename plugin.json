@@ -43,6 +43,8 @@
       "settings_show_preview_details_tip": "Show Source and Details sections in the result preview",
       "settings_enable_speech_playback": "Show speech playback buttons",
       "settings_enable_speech_playback_tip": "Add manual playback buttons to translation results. Speech never plays automatically.",
+      "settings_single_word_fast_path": "Fast path for single words",
+      "settings_single_word_fast_path_tip": "When Wox AI is a selected provider, single-word queries use the Youdao dictionary instead: much faster, no AI usage, and the preview shows phonetics, senses by part of speech, and inflections. Explicit commands like `tr wox hello` still use the AI model.",
       "help_title": "Translate text",
       "help_subtitle": "Type tr hello, tr ms hello, tr wox hello, or tr history",
       "help_preview_command": "Command",
@@ -66,6 +68,9 @@
       "preview_details": "Details",
       "preview_provider": "Provider",
       "preview_direction": "Direction",
+      "preview_dictionary": "Dictionary",
+      "preview_word_forms": "Forms",
+      "preview_corresponding_word": "Corresponds to",
       "subtitle_source": "Source",
       "subtitle_enter_to_copy": "Enter to copy",
       "subtitle_detected": "detected",
@@ -79,6 +84,7 @@
       "provider_youdao": "Youdao (no setup)",
       "provider_caiyun": "Caiyun (no setup)",
       "provider_wox_ai": "Wox AI",
+      "provider_youdao_word": "Youdao Dict (word lookup)",
       "settings_wox_ai_model": "Wox AI model",
       "settings_wox_ai_model_tip": "Reuses the AI providers you already configured in Wox settings.",
       "help_wox_ai": "`tr wox hello` uses the AI model selected in Wox settings. `tr openai hello`, `tr claude hello`, `tr deepseek hello`, and `tr custom hello` now map to it too.",
@@ -133,6 +139,8 @@
       "settings_show_preview_details_tip": "在结果预览中显示 Source 和 Details 区块",
       "settings_enable_speech_playback": "显示语音播放按钮",
       "settings_enable_speech_playback_tip": "为翻译结果添加手动播放按钮。语音不会自动播放。",
+      "settings_single_word_fast_path": "单词快速路径",
+      "settings_single_word_fast_path_tip": "开启后，翻译源包含 Wox AI 时，单个单词的查询自动改走有道词典：响应更快、不消耗 AI 额度，预览中还能看到音标、词性释义和词形变化。显式指定如 `tr wox hello` 仍会调用 AI。",
       "help_title": "翻译文本",
       "help_subtitle": "输入 tr hello、tr ms hello、tr wox hello 或 tr history",
       "help_preview_command": "命令",
@@ -156,6 +164,9 @@
       "preview_details": "详情",
       "preview_provider": "翻译源",
       "preview_direction": "方向",
+      "preview_dictionary": "词典",
+      "preview_word_forms": "词形",
+      "preview_corresponding_word": "对应词",
       "subtitle_source": "原文",
       "subtitle_enter_to_copy": "回车复制",
       "subtitle_detected": "检测到",
@@ -169,6 +180,7 @@
       "provider_youdao": "有道（免配置）",
       "provider_caiyun": "彩云（免配置）",
       "provider_wox_ai": "Wox AI",
+      "provider_youdao_word": "有道词典（单词查询）",
       "settings_wox_ai_model": "Wox AI 模型",
       "settings_wox_ai_model_tip": "复用你已在 Wox 设置里配置好的 AI 接口。",
       "help_wox_ai": "`tr wox hello` 使用 Wox 设置中选择的 AI 模型。`tr openai hello`、`tr claude hello`、`tr deepseek hello`、`tr custom hello` 现在也会走它。",
@@ -242,6 +254,18 @@
         ],
         "Style": {
           "Width": 320
+        }
+      }
+    },
+    {
+      "Type": "checkbox",
+      "Value": {
+        "Key": "single_word_fast_path",
+        "Label": "i18n:settings_single_word_fast_path",
+        "Tooltip": "i18n:settings_single_word_fast_path_tip",
+        "DefaultValue": "false",
+        "Style": {
+          "Width": 720
         }
       }
     },

@@ -2,8 +2,10 @@ import {
   collapseExtraBlankLines,
   DEFAULT_SETTINGS,
   detectLanguage,
+  fetchYoudaoWordInfo,
   getMissingConfiguration,
   historyKeyMatches,
+  isSingleWord,
   parseHistoryEntries,
   parseProviderList,
   parseProviderTableRows,
@@ -624,5 +626,145 @@ describe("provider requests", () => {
         settings: { ...DEFAULT_SETTINGS, deeplApiKey: "bad" }
       })
     ).rejects.toThrow("403")
+  })
+
+  test("maps explicit youdao_word alias through PROVIDER_ALIASES", () => {
+    expect(parseTranslationQuery("dict hello", "microsoft")).toEqual(expect.objectContaining({ provider: "youdao_word", forcedProvider: true, text: "hello" }))
+  })
+})
+
+describe("isSingleWord", () => {
+  test("accepts latin and CJK words within the length limits", () => {
+    expect(isSingleWord("hello")).toBe(true)
+    expect(isSingleWord("你好")).toBe(true)
+    expect(isSingleWord("don't")).toBe(true)
+    expect(isSingleWord("可爱")).toBe(true)
+    expect(isSingleWord("こんにちは")).toBe(true)
+  })
+
+  test("rejects phrases, whitespace and overlong inputs", () => {
+    expect(isSingleWord("hello world")).toBe(false)
+    expect(isSingleWord("今天天气很好")).toBe(false)
+    expect(isSingleWord("a".repeat(31))).toBe(false)
+    expect(isSingleWord("你好世界好".slice(0, 5))).toBe(false)
+    expect(isSingleWord("")).toBe(false)
+    expect(isSingleWord("   ")).toBe(false)
+  })
+
+  test("accepts hyphenated compounds but rejects punctuation-only input", () => {
+    expect(isSingleWord("state-of-the-art")).toBe(true)
+    expect(isSingleWord("!!!")).toBe(false)
+  })
+})
+
+describe("fetchYoudaoWordInfo", () => {
+  test("parses english dictionary entry with phonetics, senses and word forms", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        ec: {
+          word: [
+            {
+              usphone: "ˈlʌvli",
+              ukphone: "ˈlʌvli",
+              trs: [{ tr: [{ l: { i: ["adj. 可爱的，迷人的", "n. 美女"] } }] }],
+              wfs: [{ wf: { name: "复数", value: "lovelies" } }, { wf: { name: "比较级", value: "lovelier" } }]
+            }
+          ]
+        },
+        input: { input: "lovely" }
+      })
+    )
+    global.fetch = fetchMock as typeof fetch
+
+    const result = await fetchYoudaoWordInfo({
+      text: "lovely",
+      direction: resolveLanguageDirection("lovely", "auto", "zh"),
+      settings: DEFAULT_SETTINGS
+    })
+
+    expect(result.providerName).toBe("Youdao Dict")
+    expect(result.translatedText).toContain("可爱的")
+    expect(result.dictionary?.usPhonetic).toBe("ˈlʌvli")
+    expect(result.dictionary?.senses).toEqual(["adj. 可爱的，迷人的", "n. 美女"])
+    expect(result.dictionary?.wordForms).toEqual([
+      { name: "复数", value: "lovelies" },
+      { name: "比较级", value: "lovelier" }
+    ])
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(String(url)).toContain("dict.youdao.com/jsonapi_s")
+    expect(String(init.body)).toContain("q=lovely")
+  })
+
+  test("parses chinese entry with pinyin, category and web fallback", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        newhh: {
+          dataList: [
+            {
+              pinyin: "kě’ài",
+              cat: "形容词",
+              sense: [{ def: ["值得爱；让人喜爱"], cat: "形容词" }]
+            }
+          ]
+        },
+        web_trans: { "web-translation": [{ trans: [{ value: "Cute" }] }] },
+        input: { input: "可爱" }
+      })
+    )
+    global.fetch = fetchMock as typeof fetch
+
+    const result = await fetchYoudaoWordInfo({
+      text: "可爱",
+      direction: resolveLanguageDirection("可爱", "zh", "en"),
+      settings: DEFAULT_SETTINGS
+    })
+
+    expect(result.dictionary?.pinyin).toBe("kě’ài")
+    expect(result.dictionary?.senses).toEqual(["形容词. 值得爱；让人喜爱"])
+    expect(result.dictionary?.fallbackTranslation).toBe("Cute")
+    expect(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)).toContain("le=zh")
+  })
+
+  test("supports tr.l.i as a plain string", async () => {
+    global.fetch = jest.fn(async () =>
+      jsonResponse({
+        ec: { word: [{ trs: [{ tr: [{ l: { i: "n. 测试" } }] }] }] },
+        input: { input: "test" }
+      })
+    ) as typeof fetch
+
+    const result = await fetchYoudaoWordInfo({
+      text: "test",
+      direction: resolveLanguageDirection("test", "auto", "zh"),
+      settings: DEFAULT_SETTINGS
+    })
+    expect(result.dictionary?.senses).toEqual(["n. 测试"])
+  })
+
+  test("rejects missing dictionary entries instead of inventing one", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ input: { input: "" } })) as typeof fetch
+
+    await expect(
+      fetchYoudaoWordInfo({
+        text: "wzxvqk",
+        direction: resolveLanguageDirection("wzxvqk", "auto", "zh"),
+        settings: DEFAULT_SETTINGS
+      })
+    ).rejects.toThrow("no entry")
+  })
+
+  test("dispatches through translateText", async () => {
+    global.fetch = jest.fn(async () =>
+      jsonResponse({
+        ec: { word: [{ trs: [{ tr: [{ l: { i: ["n. 测试"] } }] }] }], input: { input: "test" } }
+      })
+    ) as typeof fetch
+
+    const result = await translateText("youdao_word", {
+      text: "test",
+      direction: resolveLanguageDirection("test", "auto", "zh"),
+      settings: DEFAULT_SETTINGS
+    })
+    expect(result.providerName).toBe("Youdao Dict")
   })
 })

@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto"
 
-export type TranslationProvider = "microsoft" | "youdao" | "caiyun" | "deepl" | "wox_ai"
+export type TranslationProvider = "microsoft" | "youdao" | "caiyun" | "deepl" | "wox_ai" | "youdao_word"
 
 export type LanguageCode = "auto" | "zh" | "en" | "ja" | "ko" | "ru" | "ar" | "fr" | "de"
 
@@ -58,6 +58,8 @@ export interface PluginSettings {
   showPreviewDetails: boolean
   enableSpeechPlayback: boolean
   historyLimit: number
+  /** 单词快速路径：翻译源是 Wox AI 时，单个单词改走词典机翻，避免等待大模型 */
+  singleWordFastPath: boolean
 }
 
 export interface ParsedQuery {
@@ -86,11 +88,28 @@ export interface TranslationRequest {
   /** 使用 wox_ai 时必须提供：宿主转发的 Wox 本体 AI 流式调用 */
   woxAiStream?: WoxAiStreamer
 }
-
 export interface TranslationResponse {
   translatedText: string
   providerName: string
   detectedSourceLanguage?: string
+  /** 词典元数据：仅单词查询走词典接口时存在 */
+  dictionary?: WordDictionaryInfo
+}
+
+/** 有道词典返回的单词条目：音标、词性释义、词形变化 */
+export interface WordDictionaryInfo {
+  /** 英式音标，如 ˈlʌvli */
+  ukPhonetic?: string
+  /** 美式音标，如 ˈlʌvli */
+  usPhonetic?: string
+  /** 中文拼音，如 kě’ài */
+  pinyin?: string
+  /** 分词条目：词性 + 释义，如 "adj. 可爱的；美好的" */
+  senses: string[]
+  /** 词形变化，如 复数 lovelies / 比较级 lovelier */
+  wordForms: Array<{ name: string; value: string }>
+  /** 词典对整个查询的中文释义（查无词条时由机翻兜底） */
+  fallbackTranslation?: string
 }
 
 /** Wox 本体 AI 模型，字段与 Wox selectAIModel 设置保存的 JSON 一致 */
@@ -150,6 +169,8 @@ export interface TranslationHistoryEntry {
   detectedSourceLanguage?: string
   timestamp: number
   configurationKey?: string
+  /** 词典元数据：来自单词快速路径（youdao_word），随历史一起缓存 */
+  dictionary?: WordDictionaryInfo
 }
 
 export interface ProviderTableRow {
@@ -183,7 +204,11 @@ const PROVIDER_ALIASES: Record<string, TranslationProvider> = {
   wox_ai: "wox_ai",
   woxai: "wox_ai",
   ai: "wox_ai",
-  llm_ai: "wox_ai"
+  llm_ai: "wox_ai",
+  // 单词快速路径的显式命令：把用户指到词典来源，且不会被快速路径反向替换。
+  dict: "youdao_word",
+  word: "youdao_word",
+  youdao_word: "youdao_word"
 }
 
 const MICROSOFT_TRANSLATOR_PRIVATE_KEY = Buffer.from([
@@ -205,7 +230,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   requestTimeoutMs: 10000,
   showPreviewDetails: true,
   enableSpeechPlayback: false,
-  historyLimit: 10
+  historyLimit: 10,
+  singleWordFastPath: false
 }
 
 export function normalizeProvider(value: string): TranslationProvider {
@@ -217,7 +243,7 @@ export function normalizeProvider(value: string): TranslationProvider {
 }
 
 function isTranslationProvider(value: string): value is TranslationProvider {
-  return value === "microsoft" || value === "youdao" || value === "caiyun" || value === "deepl" || value === "wox_ai"
+  return value === "microsoft" || value === "youdao" || value === "caiyun" || value === "deepl" || value === "wox_ai" || value === "youdao_word"
 }
 
 export const LANGUAGE_CODES: LanguageCode[] = ["auto", "zh", "en", "ja", "ko", "ru", "ar", "fr", "de"]
@@ -274,7 +300,7 @@ export function parseProviderTableRows(value: string): ProviderTableRow[] {
     for (const row of parsed as ProviderTableRow[]) {
       if (typeof row !== "object" || row === null || typeof row.provider !== "string") continue
       const provider = PROVIDER_ALIASES[row.provider.trim().toLowerCase()]
-      if (!provider || provider === "wox_ai") continue
+      if (!provider || provider === "wox_ai" || provider === "youdao_word") continue
       rows.push({ ...row, provider })
     }
     return rows
@@ -337,7 +363,6 @@ function sameHistoryEntry(left: TranslationHistoryEntry, right: TranslationHisto
 export function isLanguageModelProvider(provider: TranslationProvider): boolean {
   return provider === "wox_ai"
 }
-
 export function translationConfigurationKey(provider: TranslationProvider, settings: PluginSettings): string | undefined {
   if (!isLanguageModelProvider(provider)) return undefined
   // 凭据归 Wox 管理，插件只存模型标识；模型换了就必须重译。
@@ -373,6 +398,51 @@ export function searchHistoryEntries(entries: TranslationHistoryEntry[], query: 
     const translated = normalizeHistorySearchText(entry.translatedText)
     return source.includes(normalizedQuery) || translated.includes(normalizedQuery)
   })
+}
+
+/**
+ * 判断查询文本是否是「单个单词」，用于单词快速路径。
+ *
+ * 规则：不含空白字符，且长度不超过分词习惯的上限 —— 空格分词的语言
+ * （拉丁、西里尔、阿拉伯等）最多 30 个字符；纯汉语词汇最多 4 字，
+ * 含假名/谚文的词汇放宽到 6 字（如 こんにちは）。
+ * 混合文本按全部非空白字符计入，只要超限就拒绝。
+ */
+export function isSingleWord(text: string): boolean {
+  const trimmed = text.trim()
+  if (trimmed === "" || /\s/.test(trimmed)) return false
+
+  let codePoints = 0
+  let han = 0
+  let kanaHangul = 0
+  let hasLetterOrDigit = false
+  for (const char of trimmed) {
+    codePoints++
+    const code = char.codePointAt(0)!
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0xf900 && code <= 0xfaff)) {
+      han++
+      hasLetterOrDigit = true
+    } else if ((code >= 0x3040 && code <= 0x30ff) || (code >= 0xac00 && code <= 0xd7af)) {
+      kanaHangul++
+      hasLetterOrDigit = true
+    } else if (
+      (code >= 0x0041 && code <= 0x005a) ||
+      (code >= 0x0061 && code <= 0x007a) ||
+      (code >= 0x00c0 && code <= 0x024f) ||
+      (code >= 0x0400 && code <= 0x04ff) ||
+      (code >= 0x0600 && code <= 0x06ff) ||
+      (code >= 0x0030 && code <= 0x0039)
+    ) {
+      hasLetterOrDigit = true
+    }
+  }
+
+  // 全部是标点等无字母内容时不是可查词典的“词”
+  if (!hasLetterOrDigit) return false
+  // 汉语词汇一般不超过四字；日语假名和韩语谚文的单词更长，放宽到六字。
+  if (kanaHangul === 0 && han > 0) return codePoints <= 4
+  if (kanaHangul > 0) return codePoints <= 6
+  return codePoints <= 30
 }
 
 export function parseTranslationQuery(search: string, defaultProvider: TranslationProvider): ParsedQuery {
@@ -780,6 +850,156 @@ export async function translateWithYoudao(request: TranslationRequest): Promise<
   }
 }
 
+interface YoudaoWordTrsEntry {
+  tr?: Array<{ l?: { i?: unknown } }>
+}
+
+interface YoudaoWordEntry {
+  ukphone?: unknown
+  usphone?: unknown
+  trs?: YoudaoWordTrsEntry[]
+  wfs?: Array<{ wf?: { name?: unknown; value?: unknown } }>
+}
+
+interface YoudaoNewhhEntry {
+  dataList?: Array<{
+    pinyin?: unknown
+    cat?: unknown
+    sense?: Array<{ def?: unknown; cat?: unknown }>
+  }>
+}
+
+function youdaoString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+/**
+ * 从 ec（英汉词典）词条抽取「词性 + 释义」。tr.l.i 可能是字符串数组
+ * （每个元素一个义项）或单个字符串，两种形状都要兼容。
+ */
+function youdaoEcSenses(entry: YoudaoWordEntry): string[] {
+  const senses: string[] = []
+  for (const trsEntry of entry.trs || []) {
+    for (const tr of trsEntry.tr || []) {
+      const items = tr.l?.i
+      if (typeof items === "string") {
+        if (items.trim() !== "") senses.push(items.trim())
+      } else if (Array.isArray(items)) {
+        for (const item of items) {
+          const sense = youdaoString(item)
+          if (sense !== "") senses.push(sense)
+        }
+      }
+    }
+  }
+  return senses
+}
+
+/** 从 newhh（现代汉语规范词典）词条抽取「词性. 释义」行 */
+function youdaoNewhhSenses(entry: NonNullable<YoudaoNewhhEntry["dataList"]>[number]): string[] {
+  const senses: string[] = []
+  const category = youdaoString(entry.cat)
+  for (const sense of entry.sense || []) {
+    const defs = sense.def
+    const defText = Array.isArray(defs)
+      ? defs
+          .map(item => youdaoString(item))
+          .filter(item => item !== "")
+          .join("；")
+      : youdaoString(defs)
+    if (defText === "") continue
+    const senseCategory = youdaoString(sense.cat) || category
+    senses.push(senseCategory === "" ? defText : `${senseCategory}. ${defText}`)
+  }
+  return senses
+}
+
+/**
+ * 查询有道词典接口（jsonapi_s），返回单词的音标、词性释义和词形变化。
+ *
+ * 该接口与 translateWithYoudao 使用的 dicttranslate 不同：它是词典查询，
+ * 不做整句机翻。英文源词主要用 ec 词典（tr/wfs），中文源词用 newhh
+ * （拼音/词性/释义）加 web_trans 的第一个网络释义作为目标语言对应词。
+ * 查无词条时抛错，由上层决定是否回退到普通机翻。
+ */
+export async function fetchYoudaoWordInfo(request: TranslationRequest): Promise<TranslationResponse> {
+  const sourceIsChinese = request.direction.sourceLanguage === "zh"
+  const body = new URLSearchParams({
+    q: request.text,
+    type: "1",
+    client: "deskdict",
+    keyfrom: "deskdict",
+    le: sourceIsChinese ? "zh" : "eng",
+    includeSenses: "true",
+    includeTrans: "true",
+    includeDict: "true",
+    includeExample: "true",
+    tvs: "2000",
+    verify: "des",
+    time: String(Date.now())
+  })
+  const response = await fetchWithTimeout(
+    "https://dict.youdao.com/jsonapi_s",
+    {
+      method: "POST",
+      headers: {
+        Accept: "*/*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Youdao Desktop Dict (Windows NT 10.0)",
+        Cookie: "DESKDICT_VENDOR=unknown"
+      },
+      body: body.toString()
+    },
+    request.settings.requestTimeoutMs
+  )
+  const json = (await parseJsonResponse(response, "Youdao Dict")) as {
+    ec?: { word?: YoudaoWordEntry[] }
+    newhh?: YoudaoNewhhEntry
+    web_trans?: { "web-translation"?: Array<{ trans?: Array<{ value?: unknown }> }> }
+    input?: unknown
+  }
+
+  // 有道对查不到的词返回 200 + 空 input，先把这种情况挡住。
+  const inputText = youdaoString((json.input as { input?: unknown } | undefined)?.input ?? json.input)
+  if (inputText === "" && !json.ec && !json.newhh) {
+    throw new Error("Youdao Dict found no entry for this word.")
+  }
+
+  const wordEntry = json.ec?.word?.[0]
+  const newhhEntry = json.newhh?.dataList?.[0]
+  const webTranslations = json.web_trans?.["web-translation"]
+  const senses = wordEntry ? youdaoEcSenses(wordEntry) : newhhEntry ? youdaoNewhhSenses(newhhEntry) : []
+  if (senses.length === 0) {
+    throw new Error("Youdao Dict found no entry for this word.")
+  }
+
+  const wordForms: Array<{ name: string; value: string }> = []
+  for (const wf of wordEntry?.wfs || []) {
+    const name = youdaoString(wf.wf?.name)
+    const value = youdaoString(wf.wf?.value)
+    if (name !== "" && value !== "") wordForms.push({ name, value })
+  }
+
+  const dictionary: WordDictionaryInfo = {
+    senses,
+    wordForms,
+    ...(wordEntry ? { ukPhonetic: youdaoString(wordEntry.ukphone), usPhonetic: youdaoString(wordEntry.usphone) } : {}),
+    ...(newhhEntry?.pinyin ? { pinyin: youdaoString(newhhEntry.pinyin) } : {}),
+    // 中文源词没有整句译文，用第一个网络释义充当目标语言对应词。
+    ...(sourceIsChinese ? { fallbackTranslation: youdaoString(webTranslations?.[0]?.trans?.[0]?.value) } : {})
+  }
+
+  // 译文取分词条目的第一行，去掉「词性. 」前缀后作为主结果展示。
+  const primarySense = senses[0]
+  const translatedText = primarySense.replace(/^[a-zA-Z.\s&]+\.\s*/, "").trim() || primarySense
+
+  return {
+    translatedText,
+    providerName: "Youdao Dict",
+    dictionary
+  }
+}
+
 function caiyunTranslationType(direction: LanguageDirection): string {
   // 彩云只支持中英双向
   if (direction.targetLanguage === "zh") return direction.sourceLanguage === "en" ? "en2zh" : "auto2zh"
@@ -1027,6 +1247,7 @@ async function translateWithWoxAiStream(request: TranslationRequest, onProgress:
 export async function translateText(provider: TranslationProvider, request: TranslationRequest, onProgress?: TranslationProgress): Promise<TranslationResponse> {
   // Wox AI 只有流式接口；没有进度回调时用空实现跑同一条流，保证行为一致。
   if (provider === "wox_ai") return translateWithWoxAiStream(request, onProgress ?? (async () => undefined))
+  if (provider === "youdao_word") return fetchYoudaoWordInfo(request)
   if (provider === "microsoft") {
     return translateWithMicrosoft(request)
   }

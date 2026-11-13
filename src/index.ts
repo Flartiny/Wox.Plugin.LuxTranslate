@@ -8,6 +8,7 @@ import {
   historyKeyMatches,
   IncompleteTranslationError,
   isLanguageModelProvider,
+  isSingleWord,
   normalizeProvider,
   parseHistoryEntries,
   parseProviderList,
@@ -166,7 +167,8 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
     requestTimeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_SETTINGS.requestTimeoutMs,
     showPreviewDetails,
     enableSpeechPlayback,
-    historyLimit: Number.isFinite(historyLimit) && historyLimit >= 0 ? historyLimit : DEFAULT_SETTINGS.historyLimit
+    historyLimit: Number.isFinite(historyLimit) && historyLimit >= 0 ? historyLimit : DEFAULT_SETTINGS.historyLimit,
+    singleWordFastPath: (await getSetting(ctx, "single_word_fast_path", String(DEFAULT_SETTINGS.singleWordFastPath))) === "true"
   }
 }
 
@@ -219,6 +221,7 @@ function providerCommand(provider: TranslationProvider): string {
   if (provider === "caiyun") return "caiyun"
   if (provider === "deepl") return "deepl"
   if (provider === "wox_ai") return "wox"
+  if (provider === "youdao_word") return "dict"
   return "ms"
 }
 
@@ -227,6 +230,7 @@ function providerDisplayName(provider: TranslationProvider): string {
   if (provider === "youdao") return "Youdao"
   if (provider === "caiyun") return "Caiyun"
   if (provider === "deepl") return "DeepL"
+  if (provider === "youdao_word") return "Youdao Dict"
   return "Wox AI"
 }
 
@@ -253,6 +257,7 @@ function providerLabelKey(provider: TranslationProvider): string {
   if (provider === "youdao") return "provider_youdao"
   if (provider === "caiyun") return "provider_caiyun"
   if (provider === "deepl") return "provider_deepl"
+  if (provider === "youdao_word") return "provider_youdao_word"
   return "provider_wox_ai"
 }
 
@@ -435,13 +440,46 @@ async function buildRetryActions(
   return actions
 }
 
-async function buildTranslationPreview(ctx: Context, translatedText: string, sourceText: string, providerName: string, direction: string, showDetails: boolean): Promise<string> {
+async function buildDictionarySection(ctx: Context, dictionary: NonNullable<TranslationHistoryEntry["dictionary"]>): Promise<string[]> {
+  const lines: string[] = []
+  const phonetics: string[] = []
+  if (dictionary.ukPhonetic) phonetics.push(`UK /${dictionary.ukPhonetic}/`)
+  if (dictionary.usPhonetic) phonetics.push(`US /${dictionary.usPhonetic}/`)
+  if (dictionary.pinyin) phonetics.push(dictionary.pinyin)
+  if (phonetics.length > 0) {
+    lines.push(`*${phonetics.join(" · ")}*`, "")
+  }
+  if (dictionary.senses.length > 0) {
+    for (const sense of dictionary.senses) {
+      lines.push(`- ${sense}`)
+    }
+    lines.push("")
+  }
+  if (dictionary.wordForms.length > 0) {
+    const forms = dictionary.wordForms.map(form => `${form.name} **${form.value}**`).join(" · ")
+    lines.push(`**${await t(ctx, "preview_word_forms")}**: ${forms}`, "")
+  }
+  if (dictionary.fallbackTranslation) {
+    lines.push(`**${await t(ctx, "preview_corresponding_word")}**: ${dictionary.fallbackTranslation}`, "")
+  }
+  return lines
+}
+
+async function buildTranslationPreview(
+  ctx: Context,
+  translatedText: string,
+  sourceText: string,
+  providerName: string,
+  direction: string,
+  showDetails: boolean,
+  dictionary?: TranslationHistoryEntry["dictionary"]
+): Promise<string> {
   const text = collapseExtraBlankLines(translatedText)
   if (!showDetails) {
     return text
   }
 
-  return [
+  const blocks = [
     text,
     "",
     "---",
@@ -452,7 +490,11 @@ async function buildTranslationPreview(ctx: Context, translatedText: string, sou
     `## ${await t(ctx, "preview_details")}`,
     `- ${await t(ctx, "preview_provider")}: ${providerName}`,
     `- ${await t(ctx, "preview_direction")}: ${direction}`
-  ].join("\n")
+  ]
+  if (dictionary) {
+    blocks.push("", `## ${await t(ctx, "preview_dictionary")}`, "", ...(await buildDictionarySection(ctx, dictionary)))
+  }
+  return blocks.join("\n")
 }
 
 async function translateProviderResult(
@@ -527,7 +569,8 @@ async function translateProviderResult(
       targetLanguage: direction.targetLanguage,
       detectedSourceLanguage: translation.detectedSourceLanguage,
       timestamp: Date.now(),
-      configurationKey
+      configurationKey,
+      ...(translation.dictionary ? { dictionary: translation.dictionary } : {})
     }
     await saveHistoryEntry(ctx, entry, settings.historyLimit)
     const result = await buildTranslationResult(ctx, entry, sourceText, settings, score, includeProviderInTitle, false)
@@ -661,7 +704,15 @@ async function buildTranslationResult(
     Score: score,
     Preview: {
       PreviewType: "markdown",
-      PreviewData: await buildTranslationPreview(ctx, entry.translatedText, sourceText, entry.providerName, `${entry.sourceLanguage} -> ${entry.targetLanguage}`, settings.showPreviewDetails),
+      PreviewData: await buildTranslationPreview(
+        ctx,
+        entry.translatedText,
+        sourceText,
+        entry.providerName,
+        `${entry.sourceLanguage} -> ${entry.targetLanguage}`,
+        settings.showPreviewDetails,
+        entry.dictionary
+      ),
       PreviewProperties: {}
     },
     Tails: [
@@ -744,7 +795,20 @@ export const plugin: Omit<Plugin, "query"> & { query: (ctx: Context, query: Tran
       }
     }
 
-    const providers = parsed.forcedProvider || settings.visibleProviders.length === 0 ? [parsed.provider] : settings.visibleProviders
+    let providers = parsed.forcedProvider || settings.visibleProviders.length === 0 ? [parsed.provider] : settings.visibleProviders
+    // 单词快速路径：开关打开且非显式指定翻译源时，把 Wox AI 行替换成有道词典。
+    // 显式 tr wox 表示用户点名要大模型，必须尊重；其他机翻源本身够快，不替换。
+    if (settings.singleWordFastPath && !parsed.forcedProvider && isSingleWord(parsed.text) && providers.includes("wox_ai")) {
+      const fastPath: TranslationProvider[] = []
+      for (const provider of providers) {
+        if (provider === "wox_ai") {
+          if (!fastPath.includes("youdao_word")) fastPath.push("youdao_word")
+        } else if (!fastPath.includes(provider)) {
+          fastPath.push(provider)
+        }
+      }
+      providers = fastPath
+    }
     const results = await Promise.all(providers.map((provider, index) => translateProviderResult(ctx, provider, parsed.text, settings, 100 - index, providers.length > 1, parsed, query)))
     return { Results: results.filter((result): result is Result => result !== null), Refinements: refinements }
   }
