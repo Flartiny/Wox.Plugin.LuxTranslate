@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto"
 
-export type TranslationProvider = "microsoft" | "youdao" | "caiyun" | "openai" | "claude" | "deepseek" | "llm_custom" | "deepl" | "openai_compatible"
+export type TranslationProvider = "microsoft" | "youdao" | "caiyun" | "deepl" | "wox_ai"
 
 export type LanguageCode = "auto" | "zh" | "en" | "ja" | "ko" | "ru" | "ar" | "fr" | "de"
 
@@ -43,6 +43,7 @@ export const LANGUAGE_DEEPL: Record<string, string> = {
 export interface PluginSettings {
   defaultProvider: TranslationProvider
   visibleProviders: TranslationProvider[]
+  /** 只有免配置翻译源的行；大模型统一走 Wox 本体 AI，不再单独配置 */
   providerRows: ProviderTableRow[]
   defaultSourceLanguage: LanguageCode
   defaultTargetLanguage: LanguageCode
@@ -51,9 +52,8 @@ export interface PluginSettings {
   /** Wox 界面语言（由插件 init 时通过 i18n 探针检测，不需要持久化） */
   woxLanguage?: LanguageCode
   deeplApiKey: string
-  openaiBaseUrl: string
-  openaiApiKey: string
-  openaiModel: string
+  /** Wox 本体 AI 模型选择：selectAIModel 保存的 {"Name","Provider","ProviderAlias"} JSON */
+  woxAiModel: string
   requestTimeoutMs: number
   showPreviewDetails: boolean
   enableSpeechPlayback: boolean
@@ -83,12 +83,61 @@ export interface TranslationRequest {
   text: string
   direction: LanguageDirection
   settings: PluginSettings
+  /** 使用 wox_ai 时必须提供：宿主转发的 Wox 本体 AI 流式调用 */
+  woxAiStream?: WoxAiStreamer
 }
 
 export interface TranslationResponse {
   translatedText: string
   providerName: string
   detectedSourceLanguage?: string
+}
+
+/** Wox 本体 AI 模型，字段与 Wox selectAIModel 设置保存的 JSON 一致 */
+export interface WoxAiModel {
+  Provider: string
+  ProviderAlias?: string
+  Name: string
+}
+
+export interface WoxAiConversation {
+  Role: "system" | "user"
+  Text: string
+  Timestamp: number
+}
+
+/** Wox 本体 AI 流式回调的单次更新：只有正文，没有思考内容 */
+export interface WoxAiStreamUpdate {
+  /** streaming = 正在输出；finished = 全部完成；error = 宿主报告失败 */
+  status: "streaming" | "streamed" | "running_tool_call" | "finished" | "error"
+  /** 累积正文（不是增量） */
+  text: string
+}
+
+/**
+ * 宿主注入的 Wox 本体 AI 流式调用。
+ *
+ * onUpdate 收到的 `text` 是累积正文。思考内容（Reasoning）不会进入这个契约：
+ * 翻译只需要译文，思考过程既不显示也不参与结果字符串。
+ */
+export type WoxAiStreamer = (model: WoxAiModel, conversations: WoxAiConversation[], onUpdate: (update: WoxAiStreamUpdate) => void) => Promise<void>
+
+/** 解析 selectAIModel 保存的模型 JSON；空值或残缺值视为未配置 */
+export function parseWoxAiModel(value: string): WoxAiModel | null {
+  if (value.trim() === "") return null
+  try {
+    const parsed = JSON.parse(value) as Partial<WoxAiModel> | null
+    if (typeof parsed !== "object" || parsed === null) return null
+    if (typeof parsed.Provider !== "string" || parsed.Provider.trim() === "") return null
+    if (typeof parsed.Name !== "string" || parsed.Name.trim() === "") return null
+    return {
+      Provider: parsed.Provider.trim(),
+      ProviderAlias: typeof parsed.ProviderAlias === "string" ? parsed.ProviderAlias.trim() : "",
+      Name: parsed.Name.trim()
+    }
+  } catch {
+    return null
+  }
 }
 
 export interface TranslationHistoryEntry {
@@ -120,14 +169,21 @@ const PROVIDER_ALIASES: Record<string, TranslationProvider> = {
   caiyun: "caiyun",
   cy: "caiyun",
   deepl: "deepl",
-  openai: "openai",
-  claude: "claude",
-  anthropic: "claude",
-  deepseek: "deepseek",
-  custom: "llm_custom",
-  llm: "llm_custom",
-  llm_custom: "llm_custom",
-  openai_compatible: "llm_custom"
+  // 旧版本把大模型拆成 openai / claude / deepseek / custom 四个来源。
+  // 现在统一走 Wox 本体 AI，旧命令保留并映射过来，避免历史习惯失效。
+  openai: "wox_ai",
+  claude: "wox_ai",
+  anthropic: "wox_ai",
+  deepseek: "wox_ai",
+  custom: "wox_ai",
+  llm: "wox_ai",
+  llm_custom: "wox_ai",
+  openai_compatible: "wox_ai",
+  wox: "wox_ai",
+  wox_ai: "wox_ai",
+  woxai: "wox_ai",
+  ai: "wox_ai",
+  llm_ai: "wox_ai"
 }
 
 const MICROSOFT_TRANSLATOR_PRIVATE_KEY = Buffer.from([
@@ -145,9 +201,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   defaultTargetLanguage: "auto",
   pairLanguage: "auto",
   deeplApiKey: "",
-  openaiBaseUrl: "https://api.openai.com/v1",
-  openaiApiKey: "",
-  openaiModel: "gpt-4o-mini",
+  woxAiModel: "",
   requestTimeoutMs: 10000,
   showPreviewDetails: true,
   enableSpeechPlayback: false,
@@ -155,27 +209,15 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 }
 
 export function normalizeProvider(value: string): TranslationProvider {
-  if (value === "openai_compatible") {
-    return "llm_custom"
-  }
   if (isTranslationProvider(value)) {
     return value
   }
-  return DEFAULT_SETTINGS.defaultProvider
+  // 旧设置里存的是 openai / claude / deepseek / llm_custom 这类大模型来源。
+  return PROVIDER_ALIASES[value.trim().toLowerCase()] ?? DEFAULT_SETTINGS.defaultProvider
 }
 
 function isTranslationProvider(value: string): value is TranslationProvider {
-  return (
-    value === "microsoft" ||
-    value === "youdao" ||
-    value === "caiyun" ||
-    value === "openai" ||
-    value === "claude" ||
-    value === "deepseek" ||
-    value === "llm_custom" ||
-    value === "deepl" ||
-    value === "openai_compatible"
-  )
+  return value === "microsoft" || value === "youdao" || value === "caiyun" || value === "deepl" || value === "wox_ai"
 }
 
 export const LANGUAGE_CODES: LanguageCode[] = ["auto", "zh", "en", "ja", "ko", "ru", "ar", "fr", "de"]
@@ -198,14 +240,16 @@ export function parseProviderList(value: string): TranslationProvider[] {
   }
 
   for (const rawValue of rawValues) {
-    const trimmed = rawValue.trim()
+    const trimmed = rawValue.trim().toLowerCase()
     if (trimmed === "") {
       continue
     }
-    if (!isTranslationProvider(trimmed)) {
+    // 归一化而不是丢弃：旧设置里的 openai / claude / deepseek / custom
+    // 统一映射到 wox_ai，用户升级后不会突然失去已选来源。
+    const provider = PROVIDER_ALIASES[trimmed]
+    if (!provider) {
       continue
     }
-    const provider = normalizeProvider(trimmed)
     if (!providers.includes(provider)) {
       providers.push(provider)
     }
@@ -224,9 +268,16 @@ export function parseProviderTableRows(value: string): ProviderTableRow[] {
       return []
     }
 
-    return (parsed as ProviderTableRow[])
-      .filter(row => typeof row === "object" && row !== null && typeof row.provider === "string" && isTranslationProvider(row.provider))
-      .map(row => ({ ...row, provider: normalizeProvider(row.provider!) }))
+    // 只有免配置来源需要逐行配置。大模型行已由 Wox 本体 AI 取代，
+    // 残留的行在这里被过滤掉，不会凭空制造一个不存在的来源。
+    const rows: ProviderTableRow[] = []
+    for (const row of parsed as ProviderTableRow[]) {
+      if (typeof row !== "object" || row === null || typeof row.provider !== "string") continue
+      const provider = PROVIDER_ALIASES[row.provider.trim().toLowerCase()]
+      if (!provider || provider === "wox_ai") continue
+      rows.push({ ...row, provider })
+    }
+    return rows
   } catch {
     return []
   }
@@ -284,15 +335,14 @@ function sameHistoryEntry(left: TranslationHistoryEntry, right: TranslationHisto
 }
 
 export function isLanguageModelProvider(provider: TranslationProvider): boolean {
-  return ["openai", "claude", "deepseek", "llm_custom", "openai_compatible"].includes(provider)
+  return provider === "wox_ai"
 }
 
 export function translationConfigurationKey(provider: TranslationProvider, settings: PluginSettings): string | undefined {
   if (!isLanguageModelProvider(provider)) return undefined
-  // Model, endpoint, and account changes must not reuse another configuration's translation.
-  // Hash the inputs so history never stores a second copy of the credential.
+  // 凭据归 Wox 管理，插件只存模型标识；模型换了就必须重译。
   return createHash("sha256")
-    .update(JSON.stringify([provider, settings.openaiBaseUrl.replace(/\/+$/, ""), settings.openaiModel, settings.openaiApiKey]))
+    .update(JSON.stringify([provider, settings.woxAiModel]))
     .digest("hex")
 }
 
@@ -502,11 +552,8 @@ export function getMissingConfiguration(provider: TranslationProvider, settings:
   if (provider === "deepl" && settings.deeplApiKey.trim() === "") {
     return "DeepL API key is required for DeepL translation."
   }
-  if (["openai", "claude", "deepseek", "llm_custom", "openai_compatible"].includes(provider) && settings.openaiApiKey.trim() === "") {
-    return "API key is required for this large language model provider."
-  }
-  if (["openai", "claude", "deepseek", "llm_custom", "openai_compatible"].includes(provider) && settings.openaiModel.trim() === "") {
-    return "Model is required for this large language model provider."
+  if (provider === "wox_ai" && parseWoxAiModel(settings.woxAiModel) === null) {
+    return "Select a Wox AI model in the plugin settings. Wox already holds the provider credentials."
   }
   return null
 }
@@ -561,234 +608,6 @@ export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs
   } catch (error) {
     clearTimeout(timeout)
     throw controller.signal.aborted ? timeoutError : error
-  }
-}
-
-async function* readChunksWithTimeout(body: ReadableStream<Uint8Array>, timeoutMs: number): AsyncGenerator<Uint8Array> {
-  const reader = body.getReader()
-  try {
-    while (true) {
-      let timer: ReturnType<typeof setTimeout>
-      const result = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            reject(new Error(`Stream read timed out after ${timeoutMs}ms`))
-          }, timeoutMs)
-        })
-      ]).finally(() => clearTimeout(timer!))
-      if (result.done) break
-      yield result.value!
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined)
-    reader.releaseLock()
-  }
-}
-
-function parseSSEData(data: string): Record<string, unknown> | undefined {
-  try {
-    return JSON.parse(data) as Record<string, unknown>
-  } catch {
-    return undefined
-  }
-}
-
-async function parseOpenAISSEStream(chunks: AsyncGenerator<Uint8Array>, onToken: StreamCallbacks["onToken"], providerName: string): Promise<string> {
-  const decoder = new TextDecoder()
-  let buffer = ""
-  let fullText = ""
-  const consumeData = async (data: string) => {
-    if (!data || data === "[DONE]") return
-    const json = parseSSEData(data)
-    if (!json) return
-    const choices = json.choices as Array<{ delta?: { content?: string }; finish_reason?: string | null }> | undefined
-    if (json.error || choices?.[0]?.finish_reason === "error") {
-      const error = json.error as { message?: string } | string | undefined
-      const message = typeof error === "string" ? error : error?.message || data
-      throw new Error(`${providerName} returned an error: ${message}`)
-    }
-    const token = choices?.[0]?.delta?.content
-    if (token) {
-      fullText += token
-      await onToken(token)
-    }
-  }
-
-  for await (const chunk of chunks) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split("\n")
-    buffer = lines.pop() || ""
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed || !trimmed.startsWith("data:")) continue
-      await consumeData(trimmed.slice(5).trim())
-    }
-  }
-
-  const remaining = buffer.trim()
-  if (remaining && remaining.startsWith("data:")) {
-    await consumeData(remaining.slice(5).trim())
-  }
-
-  if (fullText === "") {
-    throw new Error(`${providerName} provider returned an empty translation.`)
-  }
-
-  return fullText
-}
-
-async function parseClaudeSSEStream(chunks: AsyncGenerator<Uint8Array>, onToken: StreamCallbacks["onToken"]): Promise<string> {
-  const decoder = new TextDecoder()
-  let buffer = ""
-  let fullText = ""
-  let errorText: string | null = null
-
-  for await (const chunk of chunks) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const events = buffer.split("\n\n")
-    buffer = events.pop() || ""
-
-    for (const event of events) {
-      let dataLine = ""
-
-      for (const line of event.split("\n")) {
-        const trimmed = line.trim()
-        if (trimmed.startsWith("data:")) {
-          dataLine = trimmed.slice(5).trim()
-        }
-      }
-
-      if (!dataLine) continue
-
-      const json = parseSSEData(dataLine)
-      if (json) {
-        const type = json.type as string | undefined
-
-        if (type === "content_block_delta") {
-          const delta = json.delta as { type?: string; text?: string } | undefined
-          if (delta?.type === "text_delta" && delta.text) {
-            fullText += delta.text
-            await onToken(delta.text)
-          }
-        } else if (type === "error") {
-          const err = json.error as { message?: string } | undefined
-          errorText = err?.message || dataLine
-        }
-      }
-    }
-  }
-
-  // process trailing partial event
-  const trimmedRemaining = buffer.trim()
-  if (trimmedRemaining) {
-    for (const line of trimmedRemaining.split("\n")) {
-      const trimmed = line.trim()
-      if (trimmed.startsWith("data:")) {
-        const dataLine = trimmed.slice(5).trim()
-        if (dataLine) {
-          const json = parseSSEData(dataLine)
-          if (json) {
-            const delta = (json as { delta?: { type?: string; text?: string } }).delta
-            if (delta?.type === "text_delta" && delta.text) {
-              fullText += delta.text
-              await onToken(delta.text)
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (errorText) {
-    throw new Error(`Claude provider returned an error: ${errorText}`)
-  }
-  if (fullText === "") {
-    throw new Error("Claude provider returned an empty translation.")
-  }
-
-  return fullText
-}
-
-export interface StreamCallbacks {
-  onToken: (token: string) => void | Promise<void>
-  onComplete: (fullText: string) => void | Promise<void>
-  onError: (error: Error) => void | Promise<void>
-}
-
-export async function translateWithOpenAICompatibleStream(request: TranslationRequest, providerName: string, callbacks: StreamCallbacks): Promise<void> {
-  try {
-    const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
-    const response = await fetchWithTimeout(
-      `${baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${request.settings.openaiApiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: request.settings.openaiModel,
-          messages: buildTranslationPrompt(request.text, request.direction.targetLabel).map(conversation => ({
-            role: conversation.Role,
-            content: conversation.Text
-          })),
-          temperature: 0.1,
-          stream: true
-        })
-      },
-      request.settings.requestTimeoutMs
-    )
-
-    if (!response.ok || !response.body) {
-      const bodyText = response.ok ? "" : await response.text().catch(() => "")
-      throw new Error(`${providerName} request failed with ${response.status}: ${bodyText}`)
-    }
-
-    const chunks = readChunksWithTimeout(response.body, request.settings.requestTimeoutMs)
-    const fullText = await parseOpenAISSEStream(chunks, callbacks.onToken, providerName)
-    await callbacks.onComplete(fullText)
-  } catch (error) {
-    await callbacks.onError(error instanceof Error ? error : new Error(String(error)))
-  }
-}
-
-export async function translateWithClaudeStream(request: TranslationRequest, callbacks: StreamCallbacks): Promise<void> {
-  try {
-    const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
-    const conversations = buildTranslationPrompt(request.text, request.direction.targetLabel)
-    const response = await fetchWithTimeout(
-      `${baseUrl}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "x-api-key": request.settings.openaiApiKey,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: request.settings.openaiModel,
-          system: conversations[0].Text,
-          messages: [{ role: "user", content: conversations[1].Text }],
-          max_tokens: 2048,
-          temperature: 0.1,
-          stream: true
-        })
-      },
-      request.settings.requestTimeoutMs
-    )
-
-    if (!response.ok || !response.body) {
-      const bodyText = response.ok ? "" : await response.text().catch(() => "")
-      throw new Error(`Claude request failed with ${response.status}: ${bodyText}`)
-    }
-
-    const chunks = readChunksWithTimeout(response.body, request.settings.requestTimeoutMs)
-    const fullText = await parseClaudeSSEStream(chunks, callbacks.onToken)
-    await callbacks.onComplete(fullText)
-  } catch (error) {
-    await callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }
 }
 
@@ -1106,81 +925,6 @@ export function collapseExtraBlankLines(text: string): string {
   return text.replace(/\n{3,}/g, "\n")
 }
 
-export async function translateWithOpenAICompatible(request: TranslationRequest, providerName = "OpenAI compatible"): Promise<TranslationResponse> {
-  const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
-  const response = await fetchWithTimeout(
-    `${baseUrl}/chat/completions`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${request.settings.openaiApiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: request.settings.openaiModel,
-        messages: buildTranslationPrompt(request.text, request.direction.targetLabel).map(conversation => ({
-          role: conversation.Role,
-          content: conversation.Text
-        })),
-        temperature: 0.1
-      })
-    },
-    request.settings.requestTimeoutMs
-  )
-  const json = (await parseJsonResponse(response, providerName)) as {
-    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
-  }
-  const translatedText = requireString(json.choices?.[0]?.message?.content, `${providerName} provider returned an empty translation.`)
-  validateCompletionReason(json.choices?.[0]?.finish_reason, translatedText)
-
-  return {
-    translatedText,
-    providerName
-  }
-}
-
-export async function translateWithClaude(request: TranslationRequest): Promise<TranslationResponse> {
-  const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
-  const conversations = buildTranslationPrompt(request.text, request.direction.targetLabel)
-  const response = await fetchWithTimeout(
-    `${baseUrl}/messages`,
-    {
-      method: "POST",
-      headers: {
-        "x-api-key": request.settings.openaiApiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: request.settings.openaiModel,
-        system: conversations[0].Text,
-        messages: [{ role: "user", content: conversations[1].Text }],
-        max_tokens: 2048,
-        temperature: 0.1
-      })
-    },
-    request.settings.requestTimeoutMs
-  )
-  const json = (await parseJsonResponse(response, "Claude")) as {
-    content?: Array<{ type?: string; text?: string }>
-    stop_reason?: string
-  }
-  const translatedText = requireString(
-    json.content
-      ?.filter(item => item.type === "text" && typeof item.text === "string")
-      .map(item => item.text)
-      .join("")
-      .trim(),
-    "Claude provider returned an empty translation."
-  )
-  validateCompletionReason(json.stop_reason, translatedText)
-
-  return {
-    translatedText,
-    providerName: "Claude"
-  }
-}
-
 export class IncompleteTranslationError extends Error {
   constructor(
     message: string,
@@ -1194,110 +938,95 @@ export class IncompleteTranslationError extends Error {
 
 export type TranslationProgress = (text: string) => Promise<void>
 
-function validateCompletionReason(reason: string | undefined, text: string): void {
-  if (reason && !["stop", "end_turn", "stop_sequence"].includes(reason)) {
-    throw new IncompleteTranslationError(`Translation incomplete: the model stopped before finishing (${reason}).`, text)
+async function translateWithWoxAiStream(request: TranslationRequest, onProgress: TranslationProgress): Promise<TranslationResponse> {
+  const providerName = "Wox AI"
+  const model = parseWoxAiModel(request.settings.woxAiModel)
+  if (!model) throw new Error(`${providerName}: no model selected. Pick one in the plugin settings.`)
+  const stream = request.woxAiStream
+  if (!stream) {
+    throw new Error(`${providerName} needs Wox 2.4.8 or newer. Update Wox or choose another provider.`)
   }
-}
 
-async function translateLanguageModelStream(provider: TranslationProvider, request: TranslationRequest, onProgress: TranslationProgress): Promise<TranslationResponse> {
-  const isClaude = provider === "claude"
-  const providerName = isClaude ? "Claude" : provider === "deepseek" ? "DeepSeek" : provider === "openai" ? "OpenAI" : "Custom LLM"
-  const baseUrl = request.settings.openaiBaseUrl.replace(/\/+$/, "")
   const prompt = buildTranslationPrompt(request.text, request.direction.targetLabel)
-  const response = await fetchWithTimeout(
-    `${baseUrl}/${isClaude ? "messages" : "chat/completions"}`,
-    {
-      method: "POST",
-      headers: isClaude
-        ? { "x-api-key": request.settings.openaiApiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
-        : { Authorization: `Bearer ${request.settings.openaiApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(
-        isClaude
-          ? {
-              model: request.settings.openaiModel,
-              system: prompt[0].Text,
-              messages: [{ role: "user", content: request.text }],
-              max_tokens: 2048,
-              temperature: 0.1,
-              stream: true
-            }
-          : {
-              model: request.settings.openaiModel,
-              messages: prompt.map(message => ({ role: message.Role, content: message.Text })),
-              temperature: 0.1,
-              stream: true
-            }
-      )
-    },
-    request.settings.requestTimeoutMs
-  )
+  const state = { text: "", error: null as Error | null, finished: false }
+  // onUpdate 是同步回调，而 onProgress 需要按 token 顺序落地。把更新串成一条
+  // promise 链，既保证顺序，也不让 UI 更新阻塞模型输出。
+  let updates: Promise<void> = Promise.resolve()
 
-  if (!response.ok) throw new Error(`${providerName} request failed with ${response.status}: ${await response.text()}`)
-  if (!response.body) throw new Error(`${providerName} returned an empty response body.`)
+  // AIChatStream 的 RPC 在流开始前就返回：core 用 goroutine 跑 runChatLoop，
+  // 只有这条 promise 才代表「整段输出结束」。不能拿它的 resolve 当完成信号。
+  let settle!: () => void
+  let fail!: (error: Error) => void
+  const done = new Promise<void>((resolve, reject) => {
+    settle = resolve
+    fail = reject
+  })
+  // 先挂一个 catch，避免失败路径在 await 之前成为未处理的 rejection。
+  done.catch(() => undefined)
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  let fullText = ""
-  let completed = false
-  const consumeEvent = async (event: string) => {
-    const data = event
-      .split(/\r?\n/)
-      .filter(line => line.startsWith("data:"))
-      .map(line => line.slice(5).trim())
-      .join("\n")
-      .trim()
-    if (!data) return
-    if (data === "[DONE]") {
-      completed = true
+  // 流可能因为网络或宿主问题悄悄停掉。每次收到数据就重置，长时间没动静才判超时，
+  // 这样慢模型的首个 token 不会被误杀。
+  const idleTimeoutMs = Math.max(request.settings.requestTimeoutMs, 30000)
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      if (state.finished || state.error) return
+      const error = new Error(`${providerName} stopped responding after ${idleTimeoutMs}ms.`)
+      state.error = error
+      fail(error)
+    }, idleTimeoutMs)
+  }
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = undefined
+  }
+  resetIdle()
+
+  const onUpdate = (update: WoxAiStreamUpdate) => {
+    // Wox 的 Data 是累积正文。Reasoning 被有意丢弃：翻译只显示译文。
+    if (update.status === "error") {
+      clearIdle()
+      state.error = new Error(update.text.trim() || `${providerName} returned a stream error.`)
+      fail(state.error)
       return
     }
-    const message = JSON.parse(data) as {
-      error?: { message?: string } | string
-      type?: string
-      delta?: { type?: string; text?: string; stop_reason?: string }
-      choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
+    resetIdle()
+    const text = typeof update.text === "string" ? update.text : ""
+    if (text !== "" && text !== state.text) {
+      state.text = text
+      updates = updates.then(() => onProgress(text)).catch(() => undefined)
     }
-    if (message.error || message.type === "error") {
-      throw new Error(typeof message.error === "string" ? message.error : message.error?.message || `${providerName} returned a stream error.`)
+    if (update.status === "finished") {
+      clearIdle()
+      state.finished = true
+      settle()
     }
-    const token = isClaude ? (message.type === "content_block_delta" ? message.delta?.text : undefined) : message.choices?.[0]?.delta?.content
-    if (typeof token === "string" && token !== "") {
-      fullText += token
-      await onProgress(fullText)
-    }
-    const reason = isClaude ? message.delta?.stop_reason : message.choices?.[0]?.finish_reason
-    // A partial response is not a successful translation, even when the socket closes cleanly.
-    validateCompletionReason(reason, fullText)
-    if (reason === "stop" || reason === "end_turn" || reason === "stop_sequence" || message.type === "message_stop") completed = true
   }
 
   try {
-    while (true) {
-      const chunk = await reader.read()
-      buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true })
-      const events = buffer.split(/\r?\n\r?\n/)
-      buffer = events.pop() || ""
-      for (const event of events) await consumeEvent(event)
-      if (chunk.done) break
-    }
-    if (buffer.trim()) await consumeEvent(buffer)
-    if (!completed) throw new IncompleteTranslationError("Translation incomplete: the connection ended before the completion marker.", fullText)
-    return { translatedText: requireString(fullText, `${providerName} returned an empty translation.`), providerName }
-  } catch (error) {
-    if (fullText && !(error instanceof IncompleteTranslationError) && error instanceof Error && error.message !== "Query no longer visible") {
-      throw new IncompleteTranslationError(`Translation incomplete: ${error.message}`, fullText)
-    }
-    throw error
+    await stream(
+      model,
+      prompt.map(message => ({ Role: message.Role, Text: message.Text, Timestamp: message.Timestamp })),
+      onUpdate
+    )
+    // 等流结束，而不是等 RPC 返回。
+    await done
+    await updates
   } finally {
-    await reader.cancel().catch(() => undefined)
-    reader.releaseLock()
+    clearIdle()
   }
+
+  if (state.error) throw state.error
+  if (!state.finished) throw new IncompleteTranslationError("Translation incomplete: the Wox AI stream ended without a completion event.", state.text)
+  const translatedText = requireString(state.text, `${providerName} returned an empty translation.`)
+  await onProgress(translatedText)
+  return { translatedText, providerName }
 }
 
 export async function translateText(provider: TranslationProvider, request: TranslationRequest, onProgress?: TranslationProgress): Promise<TranslationResponse> {
-  if (onProgress && isLanguageModelProvider(provider)) return translateLanguageModelStream(provider, request, onProgress)
+  // Wox AI 只有流式接口；没有进度回调时用空实现跑同一条流，保证行为一致。
+  if (provider === "wox_ai") return translateWithWoxAiStream(request, onProgress ?? (async () => undefined))
   if (provider === "microsoft") {
     return translateWithMicrosoft(request)
   }
@@ -1307,17 +1036,5 @@ export async function translateText(provider: TranslationProvider, request: Tran
   if (provider === "caiyun") {
     return translateWithCaiyun(request)
   }
-  if (provider === "deepl") {
-    return translateWithDeepL(request)
-  }
-  if (provider === "claude") {
-    return translateWithClaude(request)
-  }
-  if (provider === "openai") {
-    return translateWithOpenAICompatible(request, "OpenAI")
-  }
-  if (provider === "deepseek") {
-    return translateWithOpenAICompatible(request, "DeepSeek")
-  }
-  return translateWithOpenAICompatible(request)
+  return translateWithDeepL(request)
 }

@@ -35,24 +35,23 @@ Wox v2.4.7 + LuxTranslate v0.1.4 的 10 秒演示：输入两句相关的英文�
 
 可以使用免配置翻译源，也可以接入大模型：
 
-| 类型       | 翻译源                                                |
-| ---------- | ----------------------------------------------------- |
-| 免配置翻译 | Microsoft、有道、彩云                                 |
-| 大模型翻译 | OpenAI、Claude、DeepSeek、通用 OpenAI-compatible 接口 |
+| 类型       | 翻译源                 |
+| ---------- | ---------------------- |
+| 免配置翻译 | Microsoft、有道、彩云  |
+| 大模型翻译 | Wox AI（复用本体配置） |
 
 说明：
 
 - Microsoft 使用免手动配置的接口，但该接口不是官方稳定 API，可能随时失效。
 - 有道使用公开词典/翻译接口，适合轻量查询。
 - 彩云使用网页翻译的 JWT 流程，先获取临时 JWT，再请求译文；当前实现只支持中文或英文目标语言。该流程适合轻量查询，不是供用户填写自有 API Token 的官方接口。
-- OpenAI、DeepSeek 和通用大模型使用 OpenAI-compatible chat completions 格式。
-- Claude 使用 Anthropic Messages API 格式。
+- 大模型统一走 Wox 本体 AI：复用你在 Wox 设置中已配置的 AI 接口和凭据，插件不保存任何 Key。需要 **Wox 2.4.8 或更高版本**。
 
 ## 安装
 
 需要 **Wox 2.0.4 或更高版本**。在 Wox 的插件商店搜索 **LuxTranslate** 安装，也可以从 [GitHub Releases](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) 下载 `wox.plugin.luxtranslate.wox`，在 Wox 中打开安装。当前发布版为 [v0.1.4](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/tag/v0.1.4)。
 
-从源码构建（当前 `main` 分支版本为 0.1.5，设置页多选的 Wox 依赖见下方配置说明）：
+从源码构建（当前 `main` 分支版本为 0.2.0，设置页多选的 Wox 依赖见下方配置说明）：
 
 ```bash
 git clone https://github.com/stmluyuer/Wox.Plugin.LuxTranslate.git
@@ -72,10 +71,8 @@ pnpm build
 | `tr ms hello`       | 强制使用 Microsoft               |
 | `tr youdao hello`   | 强制使用有道                     |
 | `tr caiyun hello`   | 强制使用彩云                     |
-| `tr openai hello`   | 强制使用 OpenAI                  |
-| `tr claude hello`   | 强制使用 Claude                  |
-| `tr deepseek hello` | 强制使用 DeepSeek                |
-| `tr custom hello`   | 强制使用通用大模型接口           |
+| `tr wox hello`      | 强制使用 Wox 本体的 AI 模型      |
+| `tr openai hello`   | 同上（旧命令保留，仍可用）       |
 | `tr ms en:ja hello` | 使用 Microsoft，英文翻译为日文   |
 | `tr history`        | 查看最近翻译历史                 |
 | `tr history hello`  | 搜索翻译历史                     |
@@ -93,7 +90,7 @@ pnpm build
 - `默认翻译源`：没有选择翻译源时，普通 `tr <text>` 查询使用的来源。
 - `翻译源（多选）`（0.1.5 开发版本）：设置页和翻译窗口的“筛选”（`Ctrl+F`，macOS 为 `Cmd+F`）共用同一份选择，修改后在下次查询时生效。留空时使用默认翻译源，也可通过“使用默认翻译源”操作清空选择。升级会保留原先实际使用的筛选选择，试用框里的选项不会覆盖它。
 - `免配置翻译源`：管理 Microsoft、有道、彩云等无需手动 API Key 的翻译源。
-- `大模型翻译源`：配置 OpenAI、Claude、DeepSeek 或通用大模型的 API Key、Base URL 和模型名。
+- `Wox AI 模型`：插件唯一的大模型入口，直接复用 Wox 设置中已配置的 AI 提供方与凭据。下拉列表来自 Wox 的 AI 配置，插件不再保存 Key、Base URL 或模型名。需要 Wox 2.4.8 或更高版本。
 - `历史记录条数`：默认保留 10 条翻译历史。
 - `显示原文和服务详情`：控制预览中是否展示原文、provider 和语言方向。
 

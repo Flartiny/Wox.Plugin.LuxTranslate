@@ -4,7 +4,7 @@
   "Name": "i18n:plugin_name",
   "Description": "i18n:plugin_description",
   "Author": "stmluyuer",
-  "Version": "0.1.5",
+  "Version": "0.2.0",
   "MinWoxVersion": "2.0.4",
   "Runtime": "nodejs",
   "Website": "https://github.com/stmluyuer/Wox.Plugin.LuxTranslate",
@@ -15,7 +15,7 @@
       "language_probe": "en",
       "settings_group_basic": "Basic behavior",
       "settings_group_no_setup": "No-setup translation",
-      "settings_group_llm": "Large language models",
+      "settings_group_llm": "Wox AI (large language models)",
       "settings_group_display": "Display and history",
       "settings_group_advanced": "Advanced",
       "settings_provider": "Default provider",
@@ -24,21 +24,12 @@
       "settings_visible_providers_tip": "Choose providers to use together. This shares the selection with Filters in the translation window. Leave empty to use the default provider. Changes apply to the next query.",
       "settings_no_setup_provider_table": "No-setup providers",
       "settings_no_setup_provider_table_tip": "Providers that do not need manual API keys. Select them above or use Filters in the translation window.",
-      "settings_llm_provider_table": "Large language model providers",
-      "settings_llm_provider_table_tip": "Configure OpenAI, Claude, DeepSeek, or custom OpenAI-compatible endpoints.",
       "table_name": "Name",
       "table_provider": "Provider",
       "table_note": "Note",
       "table_note_microsoft": "No setup",
       "table_note_youdao": "No setup dictionary/translation endpoint",
       "table_note_caiyun": "No setup web translator flow",
-      "table_note_openai": "Needs OpenAI-compatible API key",
-      "table_note_claude": "Needs Anthropic API key",
-      "table_note_deepseek": "Needs DeepSeek API key",
-      "table_note_custom_llm": "Custom OpenAI-compatible endpoint",
-      "table_api_key": "API key",
-      "table_base_url": "Base URL",
-      "table_model": "Model",
       "settings_source": "Source language",
       "settings_source_tip": "Use auto detection unless a provider requires a fixed source language",
       "settings_target_language": "Target language",
@@ -53,17 +44,13 @@
       "settings_enable_speech_playback": "Show speech playback buttons",
       "settings_enable_speech_playback_tip": "Add manual playback buttons to translation results. Speech never plays automatically.",
       "help_title": "Translate text",
-      "help_subtitle": "Type tr hello, tr openai hello, tr claude hello, tr deepseek hello, or tr custom hello",
+      "help_subtitle": "Type tr hello, tr ms hello, tr wox hello, or tr history",
       "help_preview_command": "Command",
       "help_preview_description": "Description",
       "help_default_provider": "`tr hello` uses the selected providers, or the default provider when none are selected.",
       "help_microsoft": "`tr ms hello` uses Microsoft.",
       "help_youdao": "`tr youdao hello` uses Youdao.",
       "help_caiyun": "`tr caiyun hello` uses Caiyun when available.",
-      "help_openai": "`tr openai hello` uses OpenAI.",
-      "help_claude": "`tr claude hello` uses Claude.",
-      "help_deepseek": "`tr deepseek hello` uses DeepSeek.",
-      "help_custom_llm": "`tr custom hello` uses your custom OpenAI-compatible model endpoint.",
       "help_history": "`tr history` shows recent translations.",
       "help_history_search": "`tr history hello` searches translation history.",
       "help_lang_target": "`tr zh hello` translates to Chinese (auto-detect source).",
@@ -91,10 +78,10 @@
       "provider_microsoft": "Microsoft (no setup)",
       "provider_youdao": "Youdao (no setup)",
       "provider_caiyun": "Caiyun (no setup)",
-      "provider_openai": "OpenAI",
-      "provider_claude": "Claude",
-      "provider_deepseek": "DeepSeek",
-      "provider_custom_llm": "Custom LLM",
+      "provider_wox_ai": "Wox AI",
+      "settings_wox_ai_model": "Wox AI model",
+      "settings_wox_ai_model_tip": "Reuses the AI providers you already configured in Wox settings.",
+      "help_wox_ai": "`tr wox hello` uses the AI model selected in Wox settings. `tr openai hello`, `tr claude hello`, `tr deepseek hello`, and `tr custom hello` now map to it too.",
       "lang_auto": "Auto (smart direction)",
       "lang_zh": "Chinese",
       "lang_en": "English",
@@ -118,7 +105,7 @@
       "language_probe": "zh",
       "settings_group_basic": "基础行为",
       "settings_group_no_setup": "免配置翻译",
-      "settings_group_llm": "大模型翻译",
+      "settings_group_llm": "Wox AI（大模型）",
       "settings_group_display": "显示与历史",
       "settings_group_advanced": "高级设置",
       "settings_provider": "默认翻译源",
@@ -127,21 +114,12 @@
       "settings_visible_providers_tip": "选择要同时使用的翻译源，与翻译窗口的“筛选”共用同一份选择。留空时使用默认翻译源；修改后在下次查询时生效。",
       "settings_no_setup_provider_table": "免配置翻译源",
       "settings_no_setup_provider_table_tip": "不需要手动填写 API Key 的翻译源。可在上方多选框或翻译窗口的“筛选”中选择。",
-      "settings_llm_provider_table": "大模型翻译源",
-      "settings_llm_provider_table_tip": "配置 OpenAI、Claude、DeepSeek 或通用 OpenAI 兼容接口。",
       "table_name": "名称",
       "table_provider": "翻译源",
       "table_note": "备注",
       "table_note_microsoft": "免配置",
       "table_note_youdao": "免配置词典/翻译接口",
       "table_note_caiyun": "免配置网页翻译流程",
-      "table_note_openai": "需要 OpenAI 兼容 API Key",
-      "table_note_claude": "需要 Anthropic API Key",
-      "table_note_deepseek": "需要 DeepSeek API Key",
-      "table_note_custom_llm": "自定义 OpenAI 兼容接口",
-      "table_api_key": "API Key",
-      "table_base_url": "Base URL",
-      "table_model": "模型",
       "settings_source": "源语言",
       "settings_source_tip": "除非翻译服务需要固定源语言，否则建议自动检测",
       "settings_target_language": "目标语言",
@@ -156,17 +134,13 @@
       "settings_enable_speech_playback": "显示语音播放按钮",
       "settings_enable_speech_playback_tip": "为翻译结果添加手动播放按钮。语音不会自动播放。",
       "help_title": "翻译文本",
-      "help_subtitle": "输入 tr hello、tr openai hello、tr claude hello、tr deepseek hello 或 tr custom hello",
+      "help_subtitle": "输入 tr hello、tr ms hello、tr wox hello 或 tr history",
       "help_preview_command": "命令",
       "help_preview_description": "说明",
       "help_default_provider": "`tr hello` 使用已选翻译源；未选择时使用默认翻译源。",
       "help_microsoft": "`tr ms hello` 使用 Microsoft。",
       "help_youdao": "`tr youdao hello` 使用有道。",
       "help_caiyun": "`tr caiyun hello` 在可用时使用彩云。",
-      "help_openai": "`tr openai hello` 使用 OpenAI。",
-      "help_claude": "`tr claude hello` 使用 Claude。",
-      "help_deepseek": "`tr deepseek hello` 使用 DeepSeek。",
-      "help_custom_llm": "`tr custom hello` 使用自定义 OpenAI 兼容大模型接口。",
       "help_history": "`tr history` 显示最近翻译历史。",
       "help_history_search": "`tr history hello` 搜索翻译历史。",
       "help_lang_target": "`tr zh hello` 翻译为中文（自动检测源语言）。",
@@ -194,10 +168,10 @@
       "provider_microsoft": "Microsoft（免配置）",
       "provider_youdao": "有道（免配置）",
       "provider_caiyun": "彩云（免配置）",
-      "provider_openai": "OpenAI",
-      "provider_claude": "Claude",
-      "provider_deepseek": "DeepSeek",
-      "provider_custom_llm": "通用大模型",
+      "provider_wox_ai": "Wox AI",
+      "settings_wox_ai_model": "Wox AI 模型",
+      "settings_wox_ai_model_tip": "复用你已在 Wox 设置里配置好的 AI 接口。",
+      "help_wox_ai": "`tr wox hello` 使用 Wox 设置中选择的 AI 模型。`tr openai hello`、`tr claude hello`、`tr deepseek hello`、`tr custom hello` 现在也会走它。",
       "lang_auto": "自动（智能方向）",
       "lang_zh": "中文",
       "lang_en": "英文",
@@ -228,6 +202,9 @@
       "Params": {
         "IntervalMs": 300
       }
+    },
+    {
+      "Name": "ai"
     }
   ],
   "SettingDefinitions": [
@@ -259,20 +236,8 @@
             "Value": "caiyun"
           },
           {
-            "Label": "i18n:provider_openai",
-            "Value": "openai"
-          },
-          {
-            "Label": "i18n:provider_claude",
-            "Value": "claude"
-          },
-          {
-            "Label": "i18n:provider_deepseek",
-            "Value": "deepseek"
-          },
-          {
-            "Label": "i18n:provider_custom_llm",
-            "Value": "llm_custom"
+            "Label": "i18n:provider_wox_ai",
+            "Value": "wox_ai"
           }
         ],
         "Style": {
@@ -302,31 +267,13 @@
             "Value": "caiyun"
           },
           {
-            "Label": "i18n:provider_openai",
-            "Value": "openai"
-          },
-          {
-            "Label": "i18n:provider_claude",
-            "Value": "claude"
-          },
-          {
-            "Label": "i18n:provider_deepseek",
-            "Value": "deepseek"
-          },
-          {
-            "Label": "i18n:provider_custom_llm",
-            "Value": "llm_custom"
+            "Label": "i18n:provider_wox_ai",
+            "Value": "wox_ai"
           }
         ],
         "Style": {
           "Width": 320
         }
-      }
-    },
-    {
-      "Type": "label",
-      "Value": {
-        "Content": "i18n:settings_visible_providers_tip"
       }
     },
     {
@@ -555,77 +502,14 @@
       }
     },
     {
-      "Type": "table",
+      "Type": "selectAIModel",
       "Value": {
-        "Key": "llm_provider_table",
-        "Title": "i18n:settings_llm_provider_table",
-        "Tooltip": "i18n:settings_llm_provider_table_tip",
-        "DefaultValue": "[{\"name\":\"OpenAI\",\"provider\":\"openai\",\"note\":\"Needs OpenAI API key\",\"apiKey\":\"\",\"baseUrl\":\"https://api.openai.com/v1\",\"model\":\"gpt-4o-mini\"},{\"name\":\"Claude\",\"provider\":\"claude\",\"note\":\"Needs Anthropic API key\",\"apiKey\":\"\",\"baseUrl\":\"https://api.anthropic.com/v1\",\"model\":\"claude-3-5-haiku-latest\"},{\"name\":\"DeepSeek\",\"provider\":\"deepseek\",\"note\":\"Needs DeepSeek API key\",\"apiKey\":\"\",\"baseUrl\":\"https://api.deepseek.com/v1\",\"model\":\"deepseek-chat\"},{\"name\":\"Custom LLM\",\"provider\":\"llm_custom\",\"note\":\"Custom OpenAI-compatible endpoint\",\"apiKey\":\"\",\"baseUrl\":\"\",\"model\":\"\"}]",
-        "SortColumnKey": "name",
-        "SortOrder": "asc",
-        "MaxHeight": 260,
-        "Columns": [
-          {
-            "Key": "name",
-            "Label": "i18n:table_name",
-            "Type": "text",
-            "Width": 150
-          },
-          {
-            "Key": "provider",
-            "Label": "i18n:table_provider",
-            "Type": "select",
-            "Width": 180,
-            "SelectOptions": [
-              {
-                "Label": "i18n:provider_openai",
-                "Value": "openai"
-              },
-              {
-                "Label": "i18n:provider_claude",
-                "Value": "claude"
-              },
-              {
-                "Label": "i18n:provider_deepseek",
-                "Value": "deepseek"
-              },
-              {
-                "Label": "i18n:provider_custom_llm",
-                "Value": "llm_custom"
-              }
-            ]
-          },
-          {
-            "Key": "note",
-            "Label": "i18n:table_note",
-            "Type": "text",
-            "Width": 240
-          },
-          {
-            "Key": "apiKey",
-            "Label": "i18n:table_api_key",
-            "Type": "text",
-            "Width": 320,
-            "HideInTable": true
-          },
-          {
-            "Key": "baseUrl",
-            "Label": "i18n:table_base_url",
-            "Type": "text",
-            "Width": 360,
-            "HideInTable": true
-          },
-          {
-            "Key": "model",
-            "Label": "i18n:table_model",
-            "Type": "text",
-            "Width": 240,
-            "HideInTable": true
-          }
-        ],
-        "Style": {
-          "Width": 720
-        }
+        "Key": "wox_ai_model",
+        "Label": "i18n:settings_wox_ai_model",
+        "Tooltip": "i18n:settings_wox_ai_model_tip",
+        "DefaultValue": "",
+        "Validators": [],
+        "Style": {}
       }
     },
     {

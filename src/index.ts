@@ -22,7 +22,11 @@ import {
   translationConfigurationKey,
   LanguageDirection,
   upsertHistoryEntry,
-  LanguageCode
+  LanguageCode,
+  WoxAiModel,
+  WoxAiStreamUpdate,
+  WoxAiConversation,
+  WoxAiStreamer
 } from "./translate"
 
 let api: PublicAPI
@@ -35,7 +39,9 @@ let providerRefinementId = "translation_providers"
 const HISTORY_SETTING_KEY = "translation_history"
 const PROVIDERS_SETTING_KEY = "visible_providers"
 const PROVIDERS_MIGRATED_KEY = "visible_providers_migrated"
-const VISIBLE_PROVIDERS: TranslationProvider[] = ["microsoft", "youdao", "caiyun", "openai", "claude", "deepseek", "llm_custom"]
+// DeepL stays out of the picker: it has no settings row, so selecting it would
+// only ever produce a "needs configuration" result.
+const VISIBLE_PROVIDERS: TranslationProvider[] = ["microsoft", "youdao", "caiyun", "wox_ai"]
 
 // The bundled SDK predates QueryResponse. Keep the supported Wox >= 2.0.4
 // wire fields typed here without adding a runtime dependency or changing the host.
@@ -71,11 +77,20 @@ function visibleProviderList(value: string): TranslationProvider[] {
   return parseProviderList(value).filter(provider => VISIBLE_PROVIDERS.includes(provider))
 }
 
+// The pre-0.2.0 settings page had one switch per provider, including the four
+// separate LLM providers. All four now collapse into wox_ai, so any of them
+// being on must keep the user on a large model instead of dropping the choice.
+const LEGACY_LLM_SWITCHES = ["openai", "claude", "deepseek", "llm_custom"]
+
 async function migrateVisibleProviders(ctx: Context): Promise<void> {
   if ((await getSetting(ctx, PROVIDERS_MIGRATED_KEY, "")) === "true") return
   const legacy = visibleProviderList(await getSetting(ctx, PROVIDERS_SETTING_KEY, ""))
   const enabled = await Promise.all(VISIBLE_PROVIDERS.map(provider => getSetting(ctx, `visible_provider_${provider}`, legacy.includes(provider) ? "true" : "false")))
   const providers = VISIBLE_PROVIDERS.filter((_provider, index) => enabled[index] === "true")
+  const legacyLlmEnabled = await Promise.all(LEGACY_LLM_SWITCHES.map(provider => getSetting(ctx, `visible_provider_${provider}`, "false")))
+  if (legacyLlmEnabled.some(value => value === "true") && !providers.includes("wox_ai")) {
+    providers.push("wox_ai")
+  }
   await api.SaveSetting(ctx, PROVIDERS_SETTING_KEY, providers.join(","), false)
   // Empty is a valid selection; remember migration separately so old switches
   // cannot restore cleared choices on the next startup.
@@ -133,7 +148,6 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
   const showPreviewDetails = (await getSetting(ctx, "show_preview_details", String(DEFAULT_SETTINGS.showPreviewDetails))) === "true"
   const enableSpeechPlayback = (await getSetting(ctx, "enable_speech_playback", String(DEFAULT_SETTINGS.enableSpeechPlayback))) === "true"
   const noSetupProviderTableValue = await getSetting(ctx, "no_setup_provider_table", "")
-  const llmProviderTableValue = await getSetting(ctx, "llm_provider_table", "")
   const visibleProviders = visibleProviderList(await getSetting(ctx, PROVIDERS_SETTING_KEY, ""))
 
   const targetLanguageRaw = await getSetting(ctx, "default_target_language", DEFAULT_SETTINGS.defaultTargetLanguage || "auto")
@@ -142,15 +156,13 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
   return {
     defaultProvider: normalizeProvider(await getSetting(ctx, "default_provider", DEFAULT_SETTINGS.defaultProvider)),
     visibleProviders,
-    providerRows: [...parseProviderTableRows(noSetupProviderTableValue), ...parseProviderTableRows(llmProviderTableValue)],
+    providerRows: parseProviderTableRows(noSetupProviderTableValue),
     defaultSourceLanguage: (await getSetting(ctx, "default_source_language", DEFAULT_SETTINGS.defaultSourceLanguage)) as LanguageCode,
     defaultTargetLanguage: normalizeLanguageCode(targetLanguageRaw) as LanguageCode,
     pairLanguage: normalizeLanguageCode(pairLanguageRaw) as LanguageCode,
     woxLanguage,
     deeplApiKey: await getSetting(ctx, "deepl_api_key", DEFAULT_SETTINGS.deeplApiKey),
-    openaiBaseUrl: await getSetting(ctx, "openai_base_url", DEFAULT_SETTINGS.openaiBaseUrl),
-    openaiApiKey: await getSetting(ctx, "openai_api_key", DEFAULT_SETTINGS.openaiApiKey),
-    openaiModel: await getSetting(ctx, "openai_model", DEFAULT_SETTINGS.openaiModel),
+    woxAiModel: await getSetting(ctx, "wox_ai_model", DEFAULT_SETTINGS.woxAiModel),
     requestTimeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_SETTINGS.requestTimeoutMs,
     showPreviewDetails,
     enableSpeechPlayback,
@@ -158,24 +170,25 @@ async function loadSettings(ctx: Context): Promise<PluginSettings> {
   }
 }
 
-function settingsForProvider(settings: PluginSettings, provider: TranslationProvider): PluginSettings {
-  const row = settings.providerRows.find(item => item.provider === provider)
-  const providerDefaults: Partial<Pick<PluginSettings, "openaiBaseUrl" | "openaiModel">> = {
-    openaiBaseUrl:
-      provider === "openai" ? "https://api.openai.com/v1" : provider === "deepseek" ? "https://api.deepseek.com/v1" : provider === "claude" ? "https://api.anthropic.com/v1" : settings.openaiBaseUrl,
-    openaiModel: provider === "openai" ? "gpt-4o-mini" : provider === "deepseek" ? "deepseek-chat" : provider === "claude" ? "claude-3-5-haiku-latest" : settings.openaiModel
-  }
+// AIChatStream arrived in Wox 2.4.8 / SDK 0.0.143; the bundled SDK only types
+// LLMStream. Declare the wire shape here so the plugin works on both.
+interface WoxAiChatStreamData {
+  Status: WoxAiStreamUpdate["status"]
+  Data: string
+  Reasoning?: string
+}
+type WoxAiChatStream = (ctx: Context, model: WoxAiModel, conversations: WoxAiConversation[], options: Record<string, never>, callback: (data: WoxAiChatStreamData) => void) => Promise<void>
 
-  if (!row) {
-    return { ...settings, ...providerDefaults }
-  }
-
-  return {
-    ...settings,
-    ...providerDefaults,
-    openaiBaseUrl: row.baseUrl?.trim() || providerDefaults.openaiBaseUrl || settings.openaiBaseUrl,
-    openaiApiKey: row.apiKey?.trim() || settings.openaiApiKey,
-    openaiModel: row.model?.trim() || providerDefaults.openaiModel || settings.openaiModel
+function woxAiStreamer(ctx: Context): WoxAiStreamer | undefined {
+  const candidate = (api as unknown as { AIChatStream?: WoxAiChatStream }).AIChatStream
+  if (typeof candidate !== "function") return undefined
+  return async (model, conversations, onUpdate) => {
+    // Call through `api`: the host implementation keeps its stream callbacks on
+    // `this`. Detaching the method drops `this` and it throws on llmStreamCallbacks.
+    await candidate.call(api, ctx, model, conversations, {}, data => {
+      // Reasoning is deliberately dropped: translation only shows the answer.
+      onUpdate({ status: data.Status, text: data.Data })
+    })
   }
 }
 
@@ -205,10 +218,7 @@ function providerCommand(provider: TranslationProvider): string {
   if (provider === "youdao") return "youdao"
   if (provider === "caiyun") return "caiyun"
   if (provider === "deepl") return "deepl"
-  if (provider === "openai") return "openai"
-  if (provider === "claude") return "claude"
-  if (provider === "deepseek") return "deepseek"
-  if (provider === "llm_custom" || provider === "openai_compatible") return "custom"
+  if (provider === "wox_ai") return "wox"
   return "ms"
 }
 
@@ -217,10 +227,7 @@ function providerDisplayName(provider: TranslationProvider): string {
   if (provider === "youdao") return "Youdao"
   if (provider === "caiyun") return "Caiyun"
   if (provider === "deepl") return "DeepL"
-  if (provider === "openai") return "OpenAI"
-  if (provider === "claude") return "Claude"
-  if (provider === "deepseek") return "DeepSeek"
-  return "Custom LLM"
+  return "Wox AI"
 }
 
 async function t(ctx: Context, key: string): Promise<string> {
@@ -240,13 +247,22 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/** i18n key for a provider's display label, shared by the filter and the help table. */
+function providerLabelKey(provider: TranslationProvider): string {
+  if (provider === "microsoft") return "provider_microsoft"
+  if (provider === "youdao") return "provider_youdao"
+  if (provider === "caiyun") return "provider_caiyun"
+  if (provider === "deepl") return "provider_deepl"
+  return "provider_wox_ai"
+}
+
 async function buildProviderRefinement(ctx: Context, settings: PluginSettings, refinementId: string): Promise<ProviderRefinement> {
-  const labelKeys = ["provider_microsoft", "provider_youdao", "provider_caiyun", "provider_openai", "provider_claude", "provider_deepseek", "provider_custom_llm"]
   return {
     Id: refinementId,
     Title: await t(ctx, "refinement_provider_title"),
     Type: "multiSelect",
-    Options: await Promise.all(VISIBLE_PROVIDERS.map(async (provider, index) => ({ Value: provider, Title: await t(ctx, labelKeys[index]) }))),
+    // Look the label up per provider so the two lists cannot drift apart.
+    Options: await Promise.all(VISIBLE_PROVIDERS.map(async provider => ({ Value: provider, Title: await t(ctx, providerLabelKey(provider)) }))),
     DefaultValue: settings.visibleProviders,
     Hotkey: ""
   }
@@ -284,10 +300,7 @@ async function buildHelpResult(ctx: Context, settings: PluginSettings): Promise<
         `| tr ms hello | ${desc(await t(ctx, "help_microsoft"))} |`,
         `| tr youdao hello | ${desc(await t(ctx, "help_youdao"))} |`,
         `| tr caiyun hello | ${desc(await t(ctx, "help_caiyun"))} |`,
-        `| tr openai hello | ${desc(await t(ctx, "help_openai"))} |`,
-        `| tr claude hello | ${desc(await t(ctx, "help_claude"))} |`,
-        `| tr deepseek hello | ${desc(await t(ctx, "help_deepseek"))} |`,
-        `| tr custom hello | ${desc(await t(ctx, "help_custom_llm"))} |`,
+        `| tr wox hello | ${desc(await t(ctx, "help_wox_ai"))} |`,
         `| tr history | ${desc(await t(ctx, "help_history"))} |`,
         `| tr history hello | ${desc(await t(ctx, "help_history_search"))} |`,
         "",
@@ -452,20 +465,18 @@ async function translateProviderResult(
   languageOverrides?: { sourceLanguage?: LanguageCode; targetLanguage?: LanguageCode; forceRefresh?: boolean },
   query?: Query
 ): Promise<Result | null> {
-  const providerSettings = settingsForProvider(settings, provider)
-
   // 用户通过 tr 指令指定的语言覆盖优先，否则走设置项
-  const effectiveSource = languageOverrides?.sourceLanguage || providerSettings.defaultSourceLanguage
-  const effectiveTarget = languageOverrides?.targetLanguage || (providerSettings.defaultTargetLanguage === "auto" ? providerSettings.woxLanguage || "en" : providerSettings.defaultTargetLanguage)
-  const forceFixedTarget = Boolean(languageOverrides?.targetLanguage) || providerSettings.defaultTargetLanguage !== "auto"
-  const pair = forceFixedTarget ? effectiveTarget : providerSettings.pairLanguage || "auto"
+  const effectiveSource = languageOverrides?.sourceLanguage || settings.defaultSourceLanguage
+  const effectiveTarget = languageOverrides?.targetLanguage || (settings.defaultTargetLanguage === "auto" ? settings.woxLanguage || "en" : settings.defaultTargetLanguage)
+  const forceFixedTarget = Boolean(languageOverrides?.targetLanguage) || settings.defaultTargetLanguage !== "auto"
+  const pair = forceFixedTarget ? effectiveTarget : settings.pairLanguage || "auto"
 
   let direction = resolveLanguageDirection(sourceText, effectiveSource, effectiveTarget, pair)
-  const missingConfiguration = getMissingConfiguration(provider, providerSettings)
+  const missingConfiguration = getMissingConfiguration(provider, settings)
   if (missingConfiguration) {
     return { ...buildConfigurationResult(missingConfiguration, provider), Score: score, Actions: await buildRetryActions(ctx, sourceText, provider, direction) }
   }
-  const configurationKey = translationConfigurationKey(provider, providerSettings)
+  const configurationKey = translationConfigurationKey(provider, settings)
   const history = await loadHistory(ctx)
   const directionFromDetectedLanguage = (detectedLanguage?: string): LanguageDirection | undefined => {
     if (forceFixedTarget || effectiveSource !== "auto" || !detectedLanguage) return undefined
@@ -481,16 +492,20 @@ async function translateProviderResult(
   direction = directionFromDetectedLanguage(detectedHistory?.detectedSourceLanguage) || direction
   const historyEntry = languageOverrides?.forceRefresh ? undefined : history.find(entry => historyKeyMatches(entry, provider, sourceText, direction, configurationKey))
   if (historyEntry) {
-    return buildTranslationResult(ctx, historyEntry, sourceText, providerSettings, score, includeProviderInTitle, true)
+    return buildTranslationResult(ctx, historyEntry, sourceText, settings, score, includeProviderInTitle, true)
   }
 
   const finishTranslation = async (onProgress?: (text: string) => Promise<void>, resultId?: string): Promise<Result> => {
+    // The Wox AI channel is injected per call so a missing method on older Wox
+    // surfaces as a clear error instead of a silent hang.
+    const woxAiStream = provider === "wox_ai" ? woxAiStreamer(ctx) : undefined
     let translation = await translateText(
       provider,
       {
         text: sourceText,
         direction,
-        settings: providerSettings
+        settings: settings,
+        woxAiStream
       },
       onProgress
     )
@@ -499,7 +514,7 @@ async function translateProviderResult(
       const detectedSourceLanguage = translation.detectedSourceLanguage
       direction = correctedDirection
       translation = {
-        ...(await translateText(provider, { text: sourceText, direction, settings: providerSettings }, onProgress)),
+        ...(await translateText(provider, { text: sourceText, direction, settings: settings, woxAiStream }, onProgress)),
         detectedSourceLanguage
       }
     }
@@ -514,8 +529,8 @@ async function translateProviderResult(
       timestamp: Date.now(),
       configurationKey
     }
-    await saveHistoryEntry(ctx, entry, providerSettings.historyLimit)
-    const result = await buildTranslationResult(ctx, entry, sourceText, providerSettings, score, includeProviderInTitle, false)
+    await saveHistoryEntry(ctx, entry, settings.historyLimit)
+    const result = await buildTranslationResult(ctx, entry, sourceText, settings, score, includeProviderInTitle, false)
     return resultId ? { ...result, Id: resultId } : result
   }
 
@@ -586,7 +601,7 @@ async function translateProviderResult(
         // The query response holds this row, but a slow sibling provider can delay
         // the snapshot that makes the row updatable. Retry for at least as long as
         // one provider request may take instead of dropping the finished text.
-        const retryWindowMs = Math.min(15000, Math.max(2000, providerSettings.requestTimeoutMs))
+        const retryWindowMs = Math.min(15000, Math.max(2000, settings.requestTimeoutMs))
         const attempts = Math.max(16, Math.ceil(retryWindowMs / 120))
         for (let attempt = 0; attempt < attempts; attempt++) {
           if (await update(next)) return true

@@ -15,10 +15,10 @@ test("streaming UI skips throttled updates without cancelling translation", asyn
     await ready
     await onProgress?.("A")
     await onProgress?.("AB")
-    return { translatedText: "AB", providerName: "OpenAI" }
+    return { translatedText: "AB", providerName: "Wox AI" }
   })
   const clock = jest.spyOn(Date, "now").mockReturnValue(1000)
-  const settings: Record<string, string> = { visible_providers: "openai", openai_api_key: "test" }
+  const settings: Record<string, string> = { visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) }
   const api = {
     GetSetting: jest.fn(async (_ctx: Context, key: string) => settings[key] || ""),
     GetTranslation: jest.fn(async (_ctx: Context, key: string) => key),
@@ -35,7 +35,7 @@ test("streaming UI skips throttled updates without cancelling translation", asyn
   const ctx = {} as Context
   try {
     await plugin.init(ctx, { API: api } as unknown as PluginInitParams)
-    const response = await plugin.query(ctx, { Type: "input", Search: "openai hello" } as Query)
+    const response = await plugin.query(ctx, { Type: "input", Search: "wox hello" } as Query)
     // The placeholder must be part of this query response. Wox replaces the result
     // list with its final snapshot, which only contains accepted result IDs.
     expect(response.Results).toHaveLength(1)
@@ -69,10 +69,10 @@ test("streaming keeps going when the host has not applied the result yet", async
     await ready
     await onProgress?.("A")
     await onProgress?.("AB")
-    return { translatedText: "AB", providerName: "OpenAI" }
+    return { translatedText: "AB", providerName: "Wox AI" }
   })
   const clock = jest.spyOn(Date, "now").mockReturnValue(1000)
-  const settings: Record<string, string> = { visible_providers: "openai", openai_api_key: "test" }
+  const settings: Record<string, string> = { visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) }
   let updateCalls = 0
   const api = {
     GetSetting: jest.fn(async (_ctx: Context, key: string) => settings[key] || ""),
@@ -92,7 +92,7 @@ test("streaming keeps going when the host has not applied the result yet", async
   const ctx = {} as Context
   try {
     await plugin.init(ctx, { API: api } as unknown as PluginInitParams)
-    const [placeholder] = (await plugin.query(ctx, { Type: "input", Search: "openai hello" } as Query)).Results
+    const [placeholder] = (await plugin.query(ctx, { Type: "input", Search: "wox hello" } as Query)).Results
     resume()
     await finished
     // Early preview updates were rejected, but the final result was still retried

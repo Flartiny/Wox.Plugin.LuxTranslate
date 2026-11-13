@@ -35,24 +35,23 @@ The preview displays the Chinese translation, full source text, and provider.
 
 LuxTranslate groups providers into two categories:
 
-| Category              | Providers                                                   |
-| --------------------- | ----------------------------------------------------------- |
-| No-setup translation  | Microsoft, Youdao, Caiyun                                   |
-| Large language models | OpenAI, Claude, DeepSeek, custom OpenAI-compatible endpoint |
+| Category              | Providers                    |
+| --------------------- | ---------------------------- |
+| No-setup translation  | Microsoft, Youdao, Caiyun    |
+| Large language models | Wox AI (reuses Wox settings) |
 
 Notes:
 
 - Microsoft uses the same no-setup signed translator endpoint pattern used by LunaTranslator. It is not an official Azure Translator API contract and may change.
 - Youdao uses the signed desktop dictionary translation endpoint for lightweight lookups.
 - Caiyun uses the web translator JWT flow: it obtains a temporary JWT before requesting a translation. The current implementation only supports Chinese or English target languages. This is intended for lightweight lookups, rather than the official API with a user-supplied token.
-- OpenAI, DeepSeek, and custom LLM providers use the OpenAI-compatible chat completions format.
-- Claude uses the Anthropic Messages API format.
+- All large language model translation goes through Wox AI, which reuses the AI providers and credentials you configured in Wox settings. The plugin stores no API key. It requires **Wox 2.4.8 or later**.
 
 ## Installation
 
 Requires **Wox 2.0.4 or later**. Search for **LuxTranslate** in the Wox plugin store, or download `wox.plugin.luxtranslate.wox` from [GitHub Releases](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/latest) and open it with Wox. The current release is [v0.1.4](https://github.com/stmluyuer/Wox.Plugin.LuxTranslate/releases/tag/v0.1.4).
 
-To build from source (the current `main` branch is version 0.1.5; see Configuration for the Wox requirement of its settings multi-select):
+To build from source (the current `main` branch is version 0.2.0; see Configuration for the Wox requirement of its settings multi-select):
 
 ```bash
 git clone https://github.com/stmluyuer/Wox.Plugin.LuxTranslate.git
@@ -65,20 +64,18 @@ The build output is written to `dist/`. With Make installed, run `make package` 
 
 ## Usage
 
-| Command             | Description                        |
-| ------------------- | ---------------------------------- |
+| Command             | Description                            |
+| ------------------- | -------------------------------------- |
 | `tr hello`          | Use selected providers, or the default |
-| `tr 你好`           | Translate to English automatically |
-| `tr ms hello`       | Force Microsoft                    |
-| `tr youdao hello`   | Force Youdao                       |
-| `tr caiyun hello`   | Force Caiyun                       |
-| `tr openai hello`   | Force OpenAI                       |
-| `tr claude hello`   | Force Claude                       |
-| `tr deepseek hello` | Force DeepSeek                     |
-| `tr custom hello`   | Force the custom LLM endpoint      |
-| `tr ms en:ja hello` | Use Microsoft, English to Japanese |
-| `tr history`        | Show recent translation history    |
-| `tr history hello`  | Search translation history         |
+| `tr 你好`           | Translate to English automatically     |
+| `tr ms hello`       | Force Microsoft                        |
+| `tr youdao hello`   | Force Youdao                           |
+| `tr caiyun hello`   | Force Caiyun                           |
+| `tr wox hello`      | Force the Wox AI model                 |
+| `tr openai hello`   | Same as above (legacy alias)           |
+| `tr ms en:ja hello` | Use Microsoft, English to Japanese     |
+| `tr history`        | Show recent translation history        |
+| `tr history hello`  | Search translation history             |
 
 ### Tip
 
@@ -93,7 +90,7 @@ Version 0.1.5 on the current `main` branch adds settings-page multi-select, shar
 - `Default provider`: used by normal `tr <text>` queries when no providers are selected.
 - `Translation providers (multiple)` (0.1.5 development version): the settings page and Filters in the translation window (`Ctrl+F`, or `Cmd+F` on macOS) share the same selection. Changes apply to the next query. Leave the selection empty to use the default provider, or choose “Use default provider” to clear it. Upgrading preserves the active filter selection; trial dropdown choices do not override it.
 - `No-setup providers`: manage Microsoft, Youdao, and Caiyun-style providers.
-- `Large language model providers`: configure API keys, base URLs, and model names for OpenAI, Claude, DeepSeek, or custom endpoints.
+- `Wox AI model`: the plugin's only large language model entry point. It reuses the AI providers and credentials already configured in Wox settings, so the plugin no longer stores an API key, base URL, or model name. It requires Wox 2.4.8 or later.
 - `History limit`: keeps 10 entries by default.
 - `Show source and provider details`: controls whether previews include source text, provider, and direction details.
 

@@ -15,29 +15,6 @@ function ms(text = "你好"): Response {
   return json([{ translations: [{ text }] }])
 }
 
-function sse(text: string, finish = "stop", done = true): Response {
-  const chunks = [
-    `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finish }] })}\n\n`,
-    ...(done ? ["data: [DONE]\n\n"] : [])
-  ]
-  let index = 0
-  return new Response(
-    new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        await new Promise(resolve => setTimeout(resolve, 2))
-        if (index < chunks.length) controller.enqueue(new TextEncoder().encode(chunks[index++]))
-        else controller.close()
-      }
-    }),
-    { headers: { "content-type": "text/event-stream" } }
-  )
-}
-
-function rows(model = "model-A", baseUrl = "https://example.invalid/v1") {
-  return JSON.stringify([{ provider: "openai", name: "OpenAI", apiKey: "offline-test", model, baseUrl }])
-}
-
 async function setup(overrides: Record<string, string> = {}) {
   const settings: Record<string, string> = { request_timeout_ms: "300", ...overrides }
   const pushed: Result[] = []
@@ -59,6 +36,12 @@ async function setup(overrides: Record<string, string> = {}) {
     PushResults: jest.fn(async (_ctx, _query: Query, results: Result[]) => {
       pushed.push(...results)
       return true
+    }),
+    // Wox 本体 AI 通道：默认按 Wox 的语义推送累积正文，最后再推 finished。
+    AIChatStream: jest.fn(async (_ctx, _model, _conversations, _options, callback: (data: { Status: string; Data: string; Reasoning?: string }) => void) => {
+      callback({ Status: "streaming", Data: "你" })
+      callback({ Status: "streaming", Data: "你好" })
+      callback({ Status: "finished", Data: "你好" })
     })
   }
   await plugin.init(ctx, { API: api } as never)
@@ -114,20 +97,20 @@ afterEach(() => {
 describe("LuxTranslate 翻译与配置回归场景", () => {
   test("空查询提供一个原生多选筛选入口并恢复当前来源", async () => {
     // Given 用户此前选择了 DeepSeek
-    const h = await setup({ visible_provider_deepseek: "true" })
+    const h = await setup({ visible_provider_deepseek: "true" }) // legacy switch -> wox_ai
     global.fetch = jest.fn() as typeof fetch
     // When 打开翻译插件但尚未输入原文
     const response = await h.response("")
     // Then 只提供一个多选筛选入口且不发出翻译请求
     expect(response.Refinements).toHaveLength(1)
-    expect(response.Refinements[0]).toMatchObject({ Id: "translation_providers", Type: "multiSelect", DefaultValue: ["deepseek"] })
-    expect(response.Refinements[0].Options.map(option => option.Value)).toEqual(["microsoft", "youdao", "caiyun", "openai", "claude", "deepseek", "llm_custom"])
+    expect(response.Refinements[0]).toMatchObject({ Id: "translation_providers", Type: "multiSelect", DefaultValue: ["wox_ai"] })
+    expect(response.Refinements[0].Options.map(option => option.Value)).toEqual(["microsoft", "youdao", "caiyun", "wox_ai"])
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
   test("集中选择多个来源后保存并在插件重载后恢复", async () => {
     // Given 用户在无原文的翻译窗口中配置来源
-    const h = await setup({ visible_provider_deepseek: "true" })
+    const h = await setup({ visible_provider_deepseek: "true" }) // legacy switch -> wox_ai
     // When 在多选筛选中选中 Microsoft 和有道再重新加载插件
     await h.response("", false, { translation_providers: "microsoft,youdao" })
     await h.restart()
@@ -152,7 +135,7 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
 
   test("恢复默认操作清除多源选择且重开时不复活旧偏好", async () => {
     // Given 旧版本保存了 DeepSeek 而全局默认来源是 Microsoft
-    const h = await setup({ visible_providers: "deepseek" })
+    const h = await setup({ visible_providers: "wox_ai" })
     const response = await h.response("")
     // When 使用恢复默认操作并重新加载插件
     expect(response.Results[0].Actions?.some(item => item.Name === "action_use_default_provider")).toBeFalsy()
@@ -168,14 +151,14 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
 
   test("显式指定翻译源时不改写集中选择的偏好", async () => {
     // Given 用户集中选择了 DeepSeek
-    const h = await setup({ visible_provider_deepseek: "true" })
+    const h = await setup({ visible_provider_deepseek: "true" }) // legacy switch -> wox_ai
     global.fetch = jest.fn(async () => ms()) as typeof fetch
     // When 用命令明确指定 Microsoft 且收到同一窗口遗留的筛选值
     const response = await h.response("ms hello", false, { translation_providers: "microsoft,youdao" })
-    // Then 只请求 Microsoft 且不修改保存的 DeepSeek 选择
+    // Then 只请求 Microsoft 且不修改已迁移的 Wox AI 选择
     expect(response.Refinements).toEqual([])
     expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(h.settings.visible_providers).toBe("deepseek")
+    expect(h.settings.visible_providers).toBe("wox_ai")
   })
 
   test("连续快速选择时保存最后一次完整选择", async () => {
@@ -204,17 +187,127 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     expect(fields.filter(item => item.Type === "checkbox" && item.Value.Key?.startsWith("visible_provider_"))).toHaveLength(0)
   })
 
-  test("各翻译源的接口和模型配置可编辑并用于对应请求", async () => {
-    // Given 用户保存了 OpenAI 的接口和模型
-    const h = await setup({ llm_provider_table: rows("edited-model", "https://edited.invalid/v1") })
-    global.fetch = jest.fn(async (_url, init) => (JSON.parse(String(init?.body)).stream ? sse("译文") : json({ choices: [{ message: { content: "译文" } }] }))) as typeof fetch
-    // When 查询对应翻译源
-    const [initial] = await h.query("openai hello")
-    await h.finish(initial)
-    // Then 请求使用所保存的配置
-    const [url, init] = (global.fetch as jest.Mock).mock.calls[0]
-    expect(url).toBe("https://edited.invalid/v1/chat/completions")
-    expect(JSON.parse(init.body).model).toBe("edited-model")
+  test("设置页每条说明只出现一次，不会重复渲染", () => {
+    // Given 设置项的说明写在 Tooltip 上
+    const manifest = JSON.parse(readFileSync(join(__dirname, "../../plugin.json"), "utf8"))
+    const fields = manifest.SettingDefinitions as Array<{ Type: string; Value: { Key?: string; Tooltip?: string; Content?: string } }>
+    const tooltips = new Set(fields.filter(item => item.Value.Tooltip).map(item => item.Value.Tooltip))
+    // Then 没有再额外插入一条内容相同的 label（Wox 会把 Tooltip 渲染在控件下方，
+    // 额外的 label 会显示成第二份说明，而且在窄窗口里被截断）
+    const duplicated = fields.filter(item => item.Type === "label" && item.Value.Content && tooltips.has(item.Value.Content))
+    expect(duplicated).toEqual([])
+  })
+
+  test("选择 Wox 本体 AI 模型后无需填 Key 即可翻译且只显示译文", async () => {
+    // Given 用户只在 Wox 设置里配置过 AI，插件没有自己的 key
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", ProviderAlias: "mynewapi", Name: "gpt-4o-mini" }) })
+    // And 模型会先推思考内容再推正文
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "思考中…", Reasoning: "先判断语种" })
+      callback({ Status: "streaming", Data: "你好", Reasoning: "先判断语种" })
+      callback({ Status: "finished", Data: "你好", Reasoning: "先判断语种" })
+    })
+    global.fetch = jest.fn() as typeof fetch
+    // When 用 wox_ai 翻译
+    const [initial] = await h.query("wox hello")
+    const final = await h.finish(initial)
+    // Then 直接用 Wox 的模型通道，插件不发 HTTP 请求
+    expect(h.api.AIChatStream).toHaveBeenCalledWith(ctx, { Provider: "openai", ProviderAlias: "mynewapi", Name: "gpt-4o-mini" }, expect.any(Array), {}, expect.any(Function))
+    expect(global.fetch).not.toHaveBeenCalled()
+    // And 结果只有译文，思考内容既不进标题也不进预览
+    expect(final.Title).toBe("你好")
+    expect(JSON.stringify(final)).not.toContain("思考")
+  })
+
+  test("未选择 Wox 模型时提示去插件设置选择而不是发起请求", async () => {
+    // Given 用户选了 wox_ai 但还没选模型
+    const h = await setup({ visible_providers: "wox_ai" })
+    global.fetch = jest.fn() as typeof fetch
+    // When 翻译
+    const [result] = await h.query("wox hello")
+    // Then 给出配置提示且不触发任何请求
+    expect(result.Title).toContain("needs configuration")
+    expect(result.SubTitle).toContain("Wox AI model")
+    expect(h.api.AIChatStream).not.toHaveBeenCalled()
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  test("Wox AI 通过宿主实例调用，不丢失 llmStreamCallbacks", async () => {
+    // Given 宿主把流回调挂在实例上（真实 Wox node host 就是这种形状）
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    class HostApi {
+      declare llmStreamCallbacks: Map<string, (data: { Status: string; Data: string }) => void>
+      async AIChatStream(_ctx: unknown, _model: unknown, _conversations: unknown, _options: unknown, callback: (data: { Status: string; Data: string }) => void) {
+        // 摘掉 this 再调用会在这一行抛
+        // "Cannot read properties of undefined (reading 'llmStreamCallbacks')"
+        this.llmStreamCallbacks.set("cb", callback)
+        const emit = this.llmStreamCallbacks.get("cb")!
+        emit({ Status: "streaming", Data: "你好" })
+        emit({ Status: "finished", Data: "你好" })
+      }
+    }
+    // Mirror the real host: AIChatStream is a prototype method and the stream
+    // callback map is an instance field, so detaching the method breaks `this`.
+    const proto = HostApi.prototype as unknown as Record<string, unknown>
+    Object.setPrototypeOf(h.api, proto)
+    Object.assign(h.api, { llmStreamCallbacks: new Map() })
+    // setup() installs AIChatStream as an own jest.fn; an own property shadows the
+    // prototype, so drop it and let the lookup reach HostApi.prototype.
+    delete (h.api as Record<string, unknown>).AIChatStream
+    await h.restart()
+    global.fetch = jest.fn() as typeof fetch
+    // When 用 wox_ai 翻译
+    const [initial] = await h.query("hello")
+    const final = await h.finish(initial)
+    // Then 正常拿到译文，而不是报 llmStreamCallbacks 错误
+    expect(final.Title).toBe("你好")
+    expect(JSON.stringify(final)).not.toContain("llmStreamCallbacks")
+  })
+
+  test("旧的大模型来源选择会迁移到 Wox AI 而不是变成死路", async () => {
+    // Given 旧设置里选了 custom 并保留了 LLM 表，升级后表已不再使用
+    const h = await setup({ visible_providers: "llm_custom", llm_provider_table: "[]", wox_ai_model: JSON.stringify({ Provider: "openai", ProviderAlias: "Mercury", Name: "mercury-3" }) })
+    // When 普通翻译
+    const [placeholder] = await h.query("hello")
+    expect(placeholder.Title).toBe("translating_title")
+    // Await the stream so it cannot outlive this test and touch the next one's API.
+    expect((await h.finish(placeholder)).Title).toBe("你好")
+    // Then 直接走 Wox AI，用旧设置里选中的模型，不再出现需要填 Key 的提示
+    expect(h.api.AIChatStream).toHaveBeenCalledWith(ctx, { Provider: "openai", ProviderAlias: "Mercury", Name: "mercury-3" }, expect.any(Array), {}, expect.any(Function))
+  })
+
+  test("没有配置 Wox AI 模型时提示去插件设置选择", async () => {
+    // Given 用户选了 Wox AI 但还没选模型
+    const h = await setup({ visible_providers: "wox_ai" })
+    global.fetch = jest.fn() as typeof fetch
+    // When 普通翻译
+    const results = await h.query("hello")
+    // Then 只有配置提示，且不发起任何请求
+    expect(results).toHaveLength(1)
+    expect(results[0].Title).toContain("needs configuration")
+    expect(h.api.AIChatStream).not.toHaveBeenCalled()
+  })
+
+  test("翻译成功后不额外追加建议行", async () => {
+    // Given Wox AI 模型已配置，但用户当前用 Microsoft 且能正常工作
+    const h = await setup({ visible_providers: "microsoft", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    global.fetch = jest.fn(async () => ms()) as typeof fetch
+    // When 翻译成功
+    const results = await h.query("hello")
+    // Then 结果里没有多余的建议行
+    expect(results).toHaveLength(1)
+    expect(results[0].Title).toBe("你好")
+  })
+
+  test("免配置翻译源仍然可以逐行配置而不影响大模型", async () => {
+    // Given 用户在免配置表格里保留了自定义名称
+    const h = await setup({ no_setup_provider_table: JSON.stringify([{ provider: "microsoft", name: "MS custom" }]) })
+    global.fetch = jest.fn(async () => ms()) as typeof fetch
+    // When 使用该来源翻译
+    const [result] = await h.query("ms hello")
+    // Then 走免配置接口，不需要任何 Key
+    expect(result.Title).toBe("你好")
+    expect(global.fetch).toHaveBeenCalledTimes(1)
   })
 
   test.each(["history", "en", "ms is an abbreviation"])("选中的文本始终作为原文而不是插件命令：%s", async text => {
@@ -259,18 +352,16 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     ).toEqual(["microsoft", "youdao"])
   })
 
-  test("更换模型或接口后不复用原配置的译文缓存", async () => {
-    // Given 模型 A 已有缓存
-    const h = await setup({ llm_provider_table: rows() })
-    global.fetch = jest.fn(async (_url, init) => (JSON.parse(String(init?.body)).stream ? sse("译文") : json({ choices: [{ message: { content: "译文" } }] }))) as typeof fetch
-    await h.finish((await h.query("openai hello"))[0])
-    // When 更改模型再更改接口并重复查询
-    h.settings.llm_provider_table = rows("model-B")
-    await h.finish((await h.query("openai hello"))[0])
-    h.settings.llm_provider_table = rows("model-B", "https://new.invalid/v1")
-    await h.finish((await h.query("openai hello"))[0])
-    // Then 每份新配置都产生新的请求
-    expect(global.fetch).toHaveBeenCalledTimes(3)
+  test("更换 Wox AI 模型后不复用原模型的译文缓存", async () => {
+    // Given 模型 A 已经翻译过并写入历史
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "model-A" }) })
+    await h.finish((await h.query("hello"))[0])
+    // When 换成模型 B 再查同一句
+    h.settings.wox_ai_model = JSON.stringify({ Provider: "openai", Name: "model-B" })
+    await h.finish((await h.query("hello"))[0])
+    // Then 两次都真正请求了宿主模型，没有命中旧缓存
+    expect(h.api.AIChatStream).toHaveBeenCalledTimes(2)
+    expect(h.api.AIChatStream.mock.calls.map(call => call[1].Name)).toEqual(["model-A", "model-B"])
   })
 
   test("保留原文换行、空行和代码缩进", () => {
@@ -282,12 +373,16 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     expect(parsed.text).toBe(text)
   })
 
-  test("保留已安装版本的大模型流式输出", async () => {
-    // Given 大模型依次返回多个片段
-    const h = await setup({ llm_provider_table: rows() })
-    global.fetch = jest.fn(async () => sse("完整译文")) as typeof fetch
+  test("Wox AI 流式输出逐步更新并保留可复制的完整译文", async () => {
+    // Given 宿主模型依次推送多个片段
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "完" })
+      callback({ Status: "streaming", Data: "完整" })
+      callback({ Status: "finished", Data: "完整译文" })
+    })
     // When 查询时先展示占位结果再接收片段
-    const [initial] = await h.query("openai hello")
+    const [initial] = await h.query("hello")
     expect(initial.Id).toBeTruthy()
     const final = await h.finish(initial)
     // Then 有逐步更新且完整译文可复制
@@ -297,26 +392,39 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     expect(h.api.Copy).toHaveBeenCalledWith(ctx, { type: "text", text: "完整译文" })
   })
 
-  test.each(["length", "error"])("模型异常结束的译文不会冒充完整结果：%s", async reason => {
-    // Given 接口因长度限制结束
-    const h = await setup({ llm_provider_table: rows() })
-    global.fetch = jest.fn(async () => sse("只有前半段", reason)) as typeof fetch
+  test.each(["length", "error"])("宿主模型异常结束时不会冒充完整结果：%s", async reason => {
+    // Given 宿主在结束前报告了错误（长度截断或上游报错）
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "只有前半段" })
+      callback({ Status: "error", Data: `model stopped: ${reason}` })
+    })
     // When 处理结束原因
-    const result = await h.finish((await h.query("openai hello"))[0])
-    // Then 提示不完整且不保存成功缓存
-    expect(`${result.Title} ${result.SubTitle}`).toMatch(/incomplete|不完整/i)
+    const result = await h.finish((await h.query("hello"))[0])
+    // Then 提示失败且不保存成功缓存
+    expect(`${result.Title} ${result.SubTitle}`).toMatch(/failed|incomplete|失败|不完整/i)
     expect(h.history()).toHaveLength(0)
   })
 
-  test("连接中断或异常结束的流不会保存为完整译文", async () => {
-    // Given 接口有正文但没有完成标记
-    const h = await setup({ llm_provider_table: rows() })
-    global.fetch = jest.fn(async () => sse("只有前半段", "", false)) as typeof fetch
-    // When 连接结束
-    const result = await h.finish((await h.query("openai hello"))[0])
-    // Then 不将半份译文存入成功历史
-    expect(`${result.Title} ${result.SubTitle}`).toMatch(/incomplete|不完整/i)
-    expect(h.history()).toHaveLength(0)
+  test("宿主流没有结束事件时不会保存为完整译文", async () => {
+    // Given 流推送了正文，但始终没有 finished
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "只有前半段" })
+    })
+    // When 流悄悄停住，直到空闲超时
+    jest.useFakeTimers()
+    try {
+      const pending = h.query("hello")
+      await jest.advanceTimersByTimeAsync(30000)
+      const [initial] = await pending
+      const result = await h.finish(initial)
+      // Then 不将半份译文存入成功历史
+      expect(`${result.Title} ${result.SubTitle}`).toMatch(/failed|incomplete|失败|不完整/i)
+      expect(h.history()).toHaveLength(0)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test("请求超时也覆盖响应正文的读取", async () => {
@@ -425,51 +533,39 @@ describe("LuxTranslate 翻译与配置回归场景", () => {
     ).toEqual(["hello", "world"])
   })
 
-  test.each(["end_turn", "max_tokens"])("Claude 流正确处理结束原因：%s", async reason => {
-    // Given Claude 返回文本片段和明确的结束原因
-    const h = await setup({ llm_provider_table: JSON.stringify([{ provider: "claude", apiKey: "offline-test", baseUrl: "https://example.invalid/v1", model: "offline-model" }]) })
-    const payload = [{ type: "content_block_delta", delta: { type: "text_delta", text: "你好" } }, { type: "message_delta", delta: { stop_reason: reason } }, { type: "message_stop" }]
-      .map(event => `data: ${JSON.stringify(event)}\r\n\r\n`)
-      .join("")
-    const bytes = new TextEncoder().encode(payload)
-    const split = new TextEncoder().encode(payload.slice(0, payload.indexOf("好"))).length + 1
-    global.fetch = jest.fn(
-      async () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(bytes.slice(0, split))
-              controller.enqueue(bytes.slice(split))
-              controller.close()
-            }
-          }),
-          { headers: { "content-type": "text/event-stream" } }
-        )
-    ) as typeof fetch
-    // When 读取含有跨片段中文及 Windows 换行的流
-    const result = await h.finish((await h.query("claude hello"))[0])
-    // Then 正常完成保存完整译文而长度截断不缓存
-    if (reason === "end_turn") expect(h.history()[0].translatedText).toBe("你好")
-    else {
-      expect(result.Title).toMatch(/incomplete/i)
+  test.each(["end_turn", "max_tokens"])("宿主模型结束状态被如实处理：%s", async reason => {
+    // Given 宿主以 stopped 收尾但没有 finished
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "部分译文" })
+      callback({ Status: reason === "end_turn" ? "finished" : "error", Data: reason === "end_turn" ? "部分译文" : "truncated" })
+    })
+    // When 处理结束
+    const result = await h.finish((await h.query("hello"))[0])
+    // Then end_turn 视为完成，其他原因视为失败
+    if (reason === "end_turn") {
+      expect(result.Title).toBe("部分译文")
+      expect(h.history()).toHaveLength(1)
+    } else {
+      expect(`${result.Title} ${result.SubTitle}`).toMatch(/failed|incomplete|失败|不完整/i)
       expect(h.history()).toHaveLength(0)
     }
   })
 
-  test("大模型占位行随查询返回，不依赖 PushResults", async () => {
-    // Given 宿主会丢弃查询期间 PushResults 推入的结果
-    const h = await setup({ llm_provider_table: rows() })
-    h.api.PushResults.mockResolvedValue(false)
-    global.fetch = jest.fn(async () => sse("译文")) as typeof fetch
-    // When 插件启动大模型翻译
-    const [placeholder] = await h.query("openai hello")
-    // Then 占位行在查询响应中，最终译文仍能更新到同一行
+  test("Wox AI 占位行随查询返回，不依赖 PushResults", async () => {
+    // Given 使用 Wox 本体 AI
+    const h = await setup({ visible_providers: "wox_ai", wox_ai_model: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })
+    h.api.AIChatStream.mockImplementation(async (_ctx, _model, _conversations, _options, callback) => {
+      callback({ Status: "streaming", Data: "译文" })
+      callback({ Status: "finished", Data: "译文" })
+    })
+    // When 发起查询
+    const [placeholder] = await h.query("hello")
+    // Then 占位行直接出现在响应里，而不是通过 PushResults 追加
     expect(placeholder.Id).toMatch(/^lux-tr-/)
-    expect(placeholder.Title).toBe("translating_title")
     expect(h.api.PushResults).not.toHaveBeenCalled()
-    const result = await h.finish(placeholder)
-    expect(result.Title).toBe("译文")
-    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const final = await h.finish(placeholder)
+    expect(final.Title).toBe("译文")
     expect(h.history()).toHaveLength(1)
   })
 

@@ -8,18 +8,17 @@ import {
   parseProviderList,
   parseProviderTableRows,
   parseTranslationQuery,
+  parseWoxAiModel,
   resolveLanguageDirection,
   searchHistoryEntries,
-  StreamCallbacks,
+  translateText,
+  translationConfigurationKey,
   translateWithCaiyun,
   translateWithDeepL,
   translateWithMicrosoft,
-  translateWithClaude,
-  translateWithClaudeStream,
-  translateWithOpenAICompatible,
-  translateWithOpenAICompatibleStream,
   translateWithYoudao,
-  upsertHistoryEntry
+  upsertHistoryEntry,
+  WoxAiStreamer
 } from "../translate"
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -171,11 +170,12 @@ describe("query parsing", () => {
   test("parses provider commands", () => {
     expect(parseTranslationQuery("ms hello", "deepl")).toMatchObject({ provider: "microsoft", text: "hello", forcedProvider: true })
     expect(parseTranslationQuery("deepl hello", "microsoft")).toMatchObject({ provider: "deepl", text: "hello", forcedProvider: true })
-    expect(parseTranslationQuery("ai hello", "microsoft")).toMatchObject({ provider: "microsoft", text: "ai hello", forcedProvider: false })
-    expect(parseTranslationQuery("openai hello", "microsoft")).toMatchObject({ provider: "openai", text: "hello", forcedProvider: true })
-    expect(parseTranslationQuery("claude hello", "microsoft")).toMatchObject({ provider: "claude", text: "hello", forcedProvider: true })
-    expect(parseTranslationQuery("deepseek hello", "microsoft")).toMatchObject({ provider: "deepseek", text: "hello", forcedProvider: true })
-    expect(parseTranslationQuery("custom hello", "microsoft")).toMatchObject({ provider: "llm_custom", text: "hello", forcedProvider: true })
+    expect(parseTranslationQuery("wox hello", "microsoft")).toMatchObject({ provider: "wox_ai", text: "hello", forcedProvider: true })
+    // The old per-vendor commands stay valid so existing habits keep working.
+    expect(parseTranslationQuery("openai hello", "microsoft")).toMatchObject({ provider: "wox_ai", text: "hello", forcedProvider: true })
+    expect(parseTranslationQuery("claude hello", "microsoft")).toMatchObject({ provider: "wox_ai", text: "hello", forcedProvider: true })
+    expect(parseTranslationQuery("deepseek hello", "microsoft")).toMatchObject({ provider: "wox_ai", text: "hello", forcedProvider: true })
+    expect(parseTranslationQuery("custom hello", "microsoft")).toMatchObject({ provider: "wox_ai", text: "hello", forcedProvider: true })
   })
 
   test("parses target language from bare code", () => {
@@ -270,17 +270,20 @@ describe("query parsing", () => {
   })
 
   test("parses visible provider lists", () => {
-    expect(parseProviderList("microsoft,openai,deepseek,openai")).toEqual(["microsoft", "openai", "deepseek"])
+    expect(parseProviderList("microsoft,wox_ai,deepl,wox_ai")).toEqual(["microsoft", "wox_ai", "deepl"])
     expect(parseProviderList(JSON.stringify(["deepl", "unknown"]))).toEqual(["deepl"])
-    expect(parseProviderList("openai_compatible,llm_custom")).toEqual(["llm_custom"])
+    // Legacy selections are migrated instead of dropped, so upgrading keeps the
+    // user's active provider rather than silently falling back to the default.
+    expect(parseProviderList("openai_compatible,llm_custom")).toEqual(["wox_ai"])
+    expect(parseProviderList("openai,claude,deepseek,custom")).toEqual(["wox_ai"])
     expect(parseProviderList("")).toEqual([])
   })
 
   test("parses provider configuration rows", () => {
     const rows = [{ provider: "microsoft" }, { provider: "openai", apiKey: "openai-key", baseUrl: "https://example.com/v1", model: "model-a" }, { provider: "unknown" }]
-    expect(parseProviderTableRows(JSON.stringify(rows))).toHaveLength(2)
-    expect(parseProviderTableRows(JSON.stringify(rows))[1]).toMatchObject({ provider: "openai", apiKey: "openai-key", baseUrl: "https://example.com/v1", model: "model-a" })
-    expect(parseProviderTableRows(JSON.stringify([{ provider: "openai_compatible", apiKey: "custom-key" }]))).toEqual([{ provider: "llm_custom", apiKey: "custom-key" }])
+    // Only no-setup providers are configured per row now; LLM rows are dropped.
+    expect(parseProviderTableRows(JSON.stringify(rows))).toEqual([{ provider: "microsoft" }])
+    expect(parseProviderTableRows(JSON.stringify([{ provider: "openai_compatible", apiKey: "custom-key" }]))).toEqual([])
   })
 })
 
@@ -288,7 +291,168 @@ describe("configuration checks", () => {
   test("reports missing provider settings", () => {
     expect(getMissingConfiguration("microsoft", DEFAULT_SETTINGS)).toBeNull()
     expect(getMissingConfiguration("deepl", DEFAULT_SETTINGS)).toContain("DeepL API key")
-    expect(getMissingConfiguration("openai", DEFAULT_SETTINGS)).toContain("API key")
+    expect(getMissingConfiguration("wox_ai", DEFAULT_SETTINGS)).toContain("Wox AI model")
+  })
+
+  test("wox_ai needs only a Wox model selection, never an API key", () => {
+    // Given 插件没有任何自己的凭据
+    const settings = { ...DEFAULT_SETTINGS }
+    // Then 未选择 Wox 模型时要求选择模型
+    expect(getMissingConfiguration("wox_ai", settings)).toContain("Wox AI model")
+    // And 选中模型后不需要插件侧的 API Key
+    expect(getMissingConfiguration("wox_ai", { ...settings, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) })).toBeNull()
+    expect(getMissingConfiguration("wox_ai", { ...settings, woxAiModel: "{not json" })).toContain("Wox AI model")
+  })
+})
+
+describe("Wox AI model selection", () => {
+  test("parses the JSON stored by selectAIModel", () => {
+    expect(parseWoxAiModel("")).toBeNull()
+    expect(parseWoxAiModel("not json")).toBeNull()
+    expect(parseWoxAiModel(JSON.stringify({ Name: "gpt-4o-mini" }))).toBeNull()
+    expect(parseWoxAiModel(JSON.stringify({ Provider: "openai" }))).toBeNull()
+    expect(parseWoxAiModel(JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }))).toEqual({ Provider: "openai", ProviderAlias: "", Name: "gpt-4o-mini" })
+    expect(parseWoxAiModel(JSON.stringify({ Provider: "openai", ProviderAlias: "mynewapi", Name: "gpt-4o-mini" }))).toEqual({
+      Provider: "openai",
+      ProviderAlias: "mynewapi",
+      Name: "gpt-4o-mini"
+    })
+  })
+
+  test("streams through Wox and never leaks reasoning into the translation", async () => {
+    // Given Wox 本体流会先推思考内容再推正文
+    const fetchSpy = jest.fn()
+    const originalFetch = global.fetch
+    global.fetch = fetchSpy as unknown as typeof fetch
+    const calls: Array<{ model: unknown; conversations: Array<{ Role: string; Text: string }> }> = []
+    const woxAiStream: WoxAiStreamer = async (model, conversations, onUpdate) => {
+      calls.push({ model, conversations })
+      onUpdate({ status: "streaming", text: "你好" })
+      onUpdate({ status: "streaming", text: "你好世界" })
+      onUpdate({ status: "finished", text: "你好世界" })
+    }
+    const progress: string[] = []
+    // When 使用 wox_ai 翻译
+    try {
+      const response = await translateText(
+        "wox_ai",
+        {
+          text: "hello world",
+          direction: resolveLanguageDirection("hello world", "en", "zh"),
+          settings: { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", ProviderAlias: "mynewapi", Name: "gpt-4o-mini" }) },
+          woxAiStream
+        },
+        async text => {
+          progress.push(text)
+        }
+      )
+      // Then 结果只有译文，模型和会话按 Wox 的约定传递
+      expect(response).toEqual({ translatedText: "你好世界", providerName: "Wox AI" })
+      expect(progress).toEqual(["你好", "你好世界", "你好世界"])
+      expect(calls).toHaveLength(1)
+      expect(calls[0].model).toEqual({ Provider: "openai", ProviderAlias: "mynewapi", Name: "gpt-4o-mini" })
+      expect(calls[0].conversations.map(message => message.Role)).toEqual(["system", "user"])
+      expect(calls[0].conversations[1].Text).toBe("hello world")
+      // And 插件自己不发任何 HTTP 请求
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  test("reports a host stream error instead of returning empty text", async () => {
+    const woxAiStream: WoxAiStreamer = async (_model, _conversations, onUpdate) => {
+      onUpdate({ status: "error", text: "provider quota exceeded" })
+    }
+    await expect(
+      translateText("wox_ai", {
+        text: "hello",
+        direction: resolveLanguageDirection("hello", "en", "zh"),
+        settings: { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) },
+        woxAiStream
+      })
+    ).rejects.toThrow("provider quota exceeded")
+  })
+
+  test("waits for the stream to finish instead of the RPC returning", async () => {
+    // Given AIChatStream 的调用在流开始前就 resolve（真实 Wox 的时序）
+    let emit!: (update: { status: "streaming" | "finished"; text: string }) => void
+    const woxAiStream: WoxAiStreamer = async (_model, _conversations, onUpdate) => {
+      emit = onUpdate
+      // RPC 立即返回，数据稍后才到
+    }
+    const progress: string[] = []
+    const pending = translateText(
+      "wox_ai",
+      {
+        text: "hello",
+        direction: resolveLanguageDirection("hello", "en", "zh"),
+        settings: { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) },
+        woxAiStream
+      },
+      async text => {
+        progress.push(text)
+      }
+    )
+    // When RPC 已经返回，但流还没结束
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // Then 翻译仍在等待，不会因为 RPC 返回就判定「没有完成事件」
+    let settled = false
+    void pending.then(
+      () => (settled = true),
+      () => (settled = true)
+    )
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+
+    // When 数据陆续到达并结束
+    emit({ status: "streaming", text: "你好" })
+    emit({ status: "finished", text: "你好世界" })
+    // Then 拿到完整译文
+    await expect(pending).resolves.toEqual({ translatedText: "你好世界", providerName: "Wox AI" })
+    expect(progress).toEqual(["你好", "你好世界", "你好世界"])
+  })
+
+  test("times out instead of hanging when the stream goes silent", async () => {
+    // Given 流一直没有完成事件
+    const woxAiStream: WoxAiStreamer = async (_model, _conversations, onUpdate) => {
+      onUpdate({ status: "streaming", text: "你好" })
+    }
+    jest.useFakeTimers()
+    try {
+      const pending = translateText("wox_ai", {
+        text: "hello",
+        direction: resolveLanguageDirection("hello", "en", "zh"),
+        settings: { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) },
+        woxAiStream
+      })
+      // Attach the rejection handler before the timer fires so the assertion
+      // catches it instead of surfacing an unhandled rejection.
+      const expectation = expect(pending).rejects.toThrow("stopped responding")
+      // When 空闲超时被触发（下限 30s）
+      await jest.advanceTimersByTimeAsync(30000)
+      // Then 报超时，而不是永久挂住
+      await expectation
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test("fails clearly when Wox is too old to expose the AI channel", async () => {
+    await expect(
+      translateText("wox_ai", {
+        text: "hello",
+        direction: resolveLanguageDirection("hello", "en", "zh"),
+        settings: { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) }
+      })
+    ).rejects.toThrow("Wox 2.4.8")
+  })
+
+  test("keeps history for different Wox AI models apart", () => {
+    const settings = { ...DEFAULT_SETTINGS, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o-mini" }) }
+    const other = { ...settings, woxAiModel: JSON.stringify({ Provider: "openai", Name: "gpt-4o" }) }
+    expect(translationConfigurationKey("wox_ai", settings)).not.toBe(translationConfigurationKey("wox_ai", other))
+    expect(translationConfigurationKey("wox_ai", settings)).toBe(translationConfigurationKey("wox_ai", settings))
   })
 })
 
@@ -392,40 +556,6 @@ describe("provider requests", () => {
     expect(result.translatedText).toBe("你好")
   })
 
-  test("calls OpenAI-compatible chat completions endpoint", async () => {
-    const fetchMock = jest.fn(async () => jsonResponse({ choices: [{ message: { content: "你好" } }] }))
-    global.fetch = fetchMock as typeof fetch
-
-    const result = await translateWithOpenAICompatible({
-      text: "hello",
-      direction: resolveLanguageDirection("hello", "auto", "zh"),
-      settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://example.com/v1/", openaiModel: "model-a" }
-    })
-
-    const [url, init] = firstFetchCall(fetchMock)
-    expect(url).toBe("https://example.com/v1/chat/completions")
-    expect(headersOf(init).Authorization).toBe("Bearer token")
-    expect(JSON.parse(init.body as string).model).toBe("model-a")
-    expect(result.translatedText).toBe("你好")
-  })
-
-  test("calls Claude messages endpoint", async () => {
-    const fetchMock = jest.fn(async () => jsonResponse({ content: [{ type: "text", text: "你好" }] }))
-    global.fetch = fetchMock as typeof fetch
-
-    const result = await translateWithClaude({
-      text: "hello",
-      direction: resolveLanguageDirection("hello", "auto", "zh"),
-      settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://api.anthropic.com/v1/", openaiModel: "claude-test" }
-    })
-
-    const [url, init] = firstFetchCall(fetchMock)
-    expect(url).toBe("https://api.anthropic.com/v1/messages")
-    expect(headersOf(init)["x-api-key"]).toBe("token")
-    expect(JSON.parse(init.body as string).model).toBe("claude-test")
-    expect(result.translatedText).toBe("你好")
-  })
-
   test("calls Youdao no-setup endpoint", async () => {
     const fetchMock = jest.fn(async () => jsonResponse({ translateResult: [[{ tgt: "你好" }]] }))
     global.fetch = fetchMock as typeof fetch
@@ -494,309 +624,5 @@ describe("provider requests", () => {
         settings: { ...DEFAULT_SETTINGS, deeplApiKey: "bad" }
       })
     ).rejects.toThrow("403")
-  })
-})
-
-function sseResponse(chunks: string[]): Response {
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk))
-      }
-      controller.close()
-    }
-  })
-  return {
-    ok: true,
-    status: 200,
-    body: stream
-  } as unknown as Response
-}
-
-function sseErrorResponse(status: number, body: unknown): Response {
-  return {
-    ok: false,
-    status,
-    body: null,
-    text: async () => JSON.stringify(body)
-  } as unknown as Response
-}
-
-describe("streaming translation", () => {
-  const originalFetch = global.fetch
-  let tokens: string[]
-  let completed: string | null
-  let errors: Error[]
-  let callbacks: StreamCallbacks
-
-  beforeEach(() => {
-    tokens = []
-    completed = null
-    errors = []
-    callbacks = {
-      onToken: (token: string) => {
-        tokens.push(token)
-      },
-      onComplete: (fullText: string) => {
-        completed = fullText
-      },
-      onError: (error: Error) => {
-        errors.push(error)
-      }
-    }
-  })
-
-  afterEach(() => {
-    global.fetch = originalFetch
-  })
-
-  test("streams OpenAI SSE tokens and completes", async () => {
-    const fetchMock = jest.fn(async () =>
-      sseResponse(['data: {"id":"1","choices":[{"delta":{"content":"你好"},"index":0}]}\n\n', 'data: {"id":"1","choices":[{"delta":{"content":"世界"},"index":0}]}\n\n', "data: [DONE]\n\n"])
-    )
-    global.fetch = fetchMock as typeof fetch
-
-    await translateWithOpenAICompatibleStream(
-      {
-        text: "hello world",
-        direction: resolveLanguageDirection("hello world", "auto", "zh"),
-        settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://example.com/v1", openaiModel: "model-a" }
-      },
-      "OpenAI",
-      callbacks
-    )
-
-    expect(tokens).toEqual(["你好", "世界"])
-    expect(completed).toBe("你好世界")
-    expect(errors).toHaveLength(0)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe("https://example.com/v1/chat/completions")
-    const body = JSON.parse(init.body as string)
-    expect(body.stream).toBe(true)
-    expect(body.model).toBe("model-a")
-  })
-
-  test("streams Claude SSE tokens and completes", async () => {
-    const fetchMock = jest.fn(async () =>
-      sseResponse([
-        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}\n\n',
-        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"世界"}}\n\n',
-        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
-      ])
-    )
-    global.fetch = fetchMock as typeof fetch
-
-    await translateWithClaudeStream(
-      {
-        text: "hello world",
-        direction: resolveLanguageDirection("hello world", "auto", "zh"),
-        settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://api.anthropic.com/v1", openaiModel: "claude-test" }
-      },
-      callbacks
-    )
-
-    expect(tokens).toEqual(["你好", "世界"])
-    expect(completed).toBe("你好世界")
-    expect(errors).toHaveLength(0)
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe("https://api.anthropic.com/v1/messages")
-    const body = JSON.parse(init.body as string)
-    expect(body.stream).toBe(true)
-  })
-
-  test("reports error when fetch fails with non-ok status", async () => {
-    const fetchMock = jest.fn(async () => sseErrorResponse(401, { error: "invalid key" }))
-    global.fetch = fetchMock as typeof fetch
-
-    await translateWithOpenAICompatibleStream(
-      {
-        text: "hello",
-        direction: resolveLanguageDirection("hello", "auto", "zh"),
-        settings: { ...DEFAULT_SETTINGS, openaiApiKey: "bad", openaiBaseUrl: "https://example.com/v1", openaiModel: "model" }
-      },
-      "OpenAI",
-      callbacks
-    )
-
-    expect(errors).toHaveLength(1)
-    expect(errors[0].message).toContain("401")
-    expect(completed).toBeNull()
-  })
-
-  test("handles empty SSE stream gracefully", async () => {
-    const fetchMock = jest.fn(async () => sseResponse(["data: [DONE]\n\n"]))
-    global.fetch = fetchMock as typeof fetch
-
-    await translateWithOpenAICompatibleStream(
-      {
-        text: "hello",
-        direction: resolveLanguageDirection("hello", "auto", "zh"),
-        settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://example.com/v1", openaiModel: "model" }
-      },
-      "OpenAI",
-      callbacks
-    )
-
-    expect(errors).toHaveLength(1)
-    expect(errors[0].message).toContain("empty translation")
-  })
-
-  test("handles per-chunk timeout in SSE stream", async () => {
-    const fetchMock = jest.fn(async () => {
-      const stream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('data: {"id":"1","choices":[{"delta":{"content":"hello"},"index":0}]}\n\n'))
-        }
-      })
-      return { ok: true, status: 200, body: stream } as unknown as Response
-    })
-    global.fetch = fetchMock as typeof fetch
-
-    await translateWithOpenAICompatibleStream(
-      {
-        text: "hello",
-        direction: resolveLanguageDirection("hello", "auto", "zh"),
-        settings: { ...DEFAULT_SETTINGS, openaiApiKey: "token", openaiBaseUrl: "https://example.com/v1", openaiModel: "model", requestTimeoutMs: 50 }
-      },
-      "OpenAI",
-      callbacks
-    )
-
-    expect(errors).toHaveLength(1)
-    expect(errors[0].message).toContain("timed out")
-  })
-})
-
-describe("streaming regressions", () => {
-  const originalFetch = global.fetch
-  const request = {
-    text: "hello",
-    direction: resolveLanguageDirection("hello", "auto", "zh"),
-    settings: { ...DEFAULT_SETTINGS, openaiApiKey: "test", requestTimeoutMs: 50 }
-  }
-  const providers = [
-    {
-      name: "OpenAI",
-      run: (callbacks: StreamCallbacks) => translateWithOpenAICompatibleStream(request, "OpenAI", callbacks),
-      token: (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`
-    },
-    {
-      name: "Claude",
-      run: (callbacks: StreamCallbacks) => translateWithClaudeStream(request, callbacks),
-      token: (text: string) => `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } })}\n\n`
-    }
-  ]
-
-  afterEach(() => {
-    global.fetch = originalFetch
-    jest.useRealTimers()
-  })
-
-  test.each(providers)("$name awaits token and completion callbacks in order", async ({ run, token }) => {
-    global.fetch = jest.fn(async () => sseResponse([token("A") + token("B")]))
-    const events: string[] = []
-    const onError = jest.fn()
-    await run({
-      onToken: async value => {
-        await new Promise(resolve => setTimeout(resolve, 5))
-        events.push(value)
-      },
-      onComplete: async value => {
-        await new Promise(resolve => setTimeout(resolve, 5))
-        events.push(`done:${value}`)
-      },
-      onError
-    })
-    expect(events).toEqual(["A", "B", "done:AB"])
-    expect(onError).not.toHaveBeenCalled()
-  })
-
-  test.each(providers)("$name reports async callback rejection and cancels the stream", async ({ run, token }) => {
-    const cancel = jest.fn()
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(token("A") + token("B")))
-      },
-      cancel
-    })
-    global.fetch = jest.fn(async () => ({ ok: true, body }) as Response)
-    const onComplete = jest.fn()
-    const onError = jest.fn(async () => {
-      await new Promise(resolve => setTimeout(resolve, 5))
-    })
-    const failure = new SyntaxError("result no longer visible")
-    await run({
-      onToken: async () => {
-        throw failure
-      },
-      onComplete,
-      onError
-    })
-    expect(onError).toHaveBeenCalledWith(failure)
-    expect(onComplete).not.toHaveBeenCalled()
-    expect(cancel).toHaveBeenCalledTimes(1)
-    expect(body.locked).toBe(false)
-  })
-
-  test.each(providers)("$name times out while waiting for headers", async ({ run }) => {
-    jest.useFakeTimers()
-    let signal: AbortSignal | null | undefined
-    global.fetch = jest.fn((_url, init) => {
-      signal = init?.signal
-      return new Promise<Response>((_resolve, reject) => {
-        signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true })
-      })
-    })
-    const onError = jest.fn()
-    const onComplete = jest.fn()
-    const pending = run({ onToken: jest.fn(), onComplete, onError })
-    await jest.advanceTimersByTimeAsync(50)
-    expect(signal?.aborted).toBe(true)
-    await pending
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onComplete).not.toHaveBeenCalled()
-    expect(jest.getTimerCount()).toBe(0)
-  })
-
-  test.each(providers)("$name allows continued output beyond the header timeout", async ({ run, token }) => {
-    jest.useFakeTimers()
-    let controller!: ReadableStreamDefaultController<Uint8Array>
-    let signal: AbortSignal | null | undefined
-    const body = new ReadableStream<Uint8Array>({
-      start(value) {
-        controller = value
-      }
-    })
-    global.fetch = jest.fn(async (_url, init) => {
-      signal = init?.signal
-      return { ok: true, body } as Response
-    })
-    const onComplete = jest.fn()
-    const onError = jest.fn()
-    const pending = run({ onToken: jest.fn(), onComplete, onError })
-    for (const value of ["A", "B", "C"]) {
-      await jest.advanceTimersByTimeAsync(30)
-      controller.enqueue(new TextEncoder().encode(token(value)))
-    }
-    controller.close()
-    await pending
-    expect(signal?.aborted).toBe(false)
-    expect(onComplete).toHaveBeenCalledWith("ABC")
-    expect(onError).not.toHaveBeenCalled()
-    expect(jest.getTimerCount()).toBe(0)
-  })
-
-  test.each(["\n\n", ""])("OpenAI rejects a mid-stream error, including trailing data (%j)", async ending => {
-    global.fetch = jest.fn(async () =>
-      sseResponse([providers[0].token("partial"), `data: ${JSON.stringify({ error: { message: "upstream failed" }, choices: [{ delta: {}, finish_reason: "error" }] })}${ending}`])
-    )
-    const onComplete = jest.fn()
-    const onError = jest.fn()
-    await providers[0].run({ onToken: jest.fn(), onComplete, onError })
-    expect(onComplete).not.toHaveBeenCalled()
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "OpenAI returned an error: upstream failed" }))
   })
 })
