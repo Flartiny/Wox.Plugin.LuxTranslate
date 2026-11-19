@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import {
   collapseExtraBlankLines,
   DEFAULT_SETTINGS,
+  detectLanguage,
   getMissingConfiguration,
   historyKeyMatches,
   IncompleteTranslationError,
@@ -497,6 +498,11 @@ async function buildTranslationPreview(
   return blocks.join("\n")
 }
 
+/**
+ * 单词快速路径的失败兑底：快速路径替换出来的词典行失败时（查无此词、网络问题等），
+ * 回退到原本被替换的 Wox AI。回退复用完整的翻译流程（含流式更新和历史缓存，
+ * 缓存记在 wox_ai 名下）。显式 tr dict 不携带兑底目标，失败照常展示。
+ */
 async function translateProviderResult(
   ctx: Context,
   provider: TranslationProvider,
@@ -505,7 +511,30 @@ async function translateProviderResult(
   score: number,
   includeProviderInTitle: boolean,
   languageOverrides?: { sourceLanguage?: LanguageCode; targetLanguage?: LanguageCode; forceRefresh?: boolean },
-  query?: Query
+  query?: Query,
+  fallbackProvider?: TranslationProvider
+): Promise<Result | null> {
+  try {
+    return await translateWithSingleProvider(ctx, provider, sourceText, settings, score, includeProviderInTitle, languageOverrides, query, fallbackProvider)
+  } catch (error) {
+    if (provider !== "youdao_word" || !fallbackProvider || getMissingConfiguration(fallbackProvider, settings) !== null) {
+      throw error
+    }
+    await api.Log(ctx, "Info", `LuxTranslate dictionary fast path failed (${error instanceof Error ? error.message : String(error)}); falling back to ${providerDisplayName(fallbackProvider)}.`)
+    return translateWithSingleProvider(ctx, fallbackProvider, sourceText, settings, score, includeProviderInTitle, languageOverrides, query)
+  }
+}
+
+async function translateWithSingleProvider(
+  ctx: Context,
+  provider: TranslationProvider,
+  sourceText: string,
+  settings: PluginSettings,
+  score: number,
+  includeProviderInTitle: boolean,
+  languageOverrides?: { sourceLanguage?: LanguageCode; targetLanguage?: LanguageCode; forceRefresh?: boolean },
+  query?: Query,
+  fallbackProvider?: TranslationProvider
 ): Promise<Result | null> {
   // 用户通过 tr 指令指定的语言覆盖优先，否则走设置项
   const effectiveSource = languageOverrides?.sourceLanguage || settings.defaultSourceLanguage
@@ -676,6 +705,11 @@ async function translateProviderResult(
   try {
     return await finishTranslation()
   } catch (error) {
+    // 携带回退目标的词典行把错误抛回上层触发 Wox AI 兑底；
+    // 其余来源（含显式 tr dict）维持原有的失败结果行。
+    if (provider === "youdao_word" && fallbackProvider) {
+      throw error
+    }
     return failureResult(error)
   }
 }
@@ -796,20 +830,39 @@ export const plugin: Omit<Plugin, "query"> & { query: (ctx: Context, query: Tran
     }
 
     let providers = parsed.forcedProvider || settings.visibleProviders.length === 0 ? [parsed.provider] : settings.visibleProviders
+    // 快速路径替换行的回退目标：只有被替换出来的 youdao_word 行才携带。
+    let fallbacks: Array<TranslationProvider | undefined> = []
     // 单词快速路径：开关打开且非显式指定翻译源时，把 Wox AI 行替换成有道词典。
+    // 只对英文单词触发：词典的音标/词性/词形数据只对英文可靠，其它语言
+    // （中文、日文等）常常没有词条，误入快速路径只会带来硬失败。
     // 显式 tr wox 表示用户点名要大模型，必须尊重；其他机翻源本身够快，不替换。
-    if (settings.singleWordFastPath && !parsed.forcedProvider && isSingleWord(parsed.text) && providers.includes("wox_ai")) {
+    if (
+      settings.singleWordFastPath &&
+      !parsed.forcedProvider &&
+      parsed.sourceLanguage === undefined &&
+      detectLanguage(parsed.text) === "en" &&
+      isSingleWord(parsed.text) &&
+      providers.includes("wox_ai")
+    ) {
       const fastPath: TranslationProvider[] = []
+      const nextFallbacks: Array<TranslationProvider | undefined> = []
       for (const provider of providers) {
         if (provider === "wox_ai") {
-          if (!fastPath.includes("youdao_word")) fastPath.push("youdao_word")
+          if (!fastPath.includes("youdao_word")) {
+            fastPath.push("youdao_word")
+            nextFallbacks.push("wox_ai")
+          }
         } else if (!fastPath.includes(provider)) {
           fastPath.push(provider)
+          nextFallbacks.push(undefined)
         }
       }
       providers = fastPath
+      fallbacks = nextFallbacks
     }
-    const results = await Promise.all(providers.map((provider, index) => translateProviderResult(ctx, provider, parsed.text, settings, 100 - index, providers.length > 1, parsed, query)))
+    const results = await Promise.all(
+      providers.map((provider, index) => translateProviderResult(ctx, provider, parsed.text, settings, 100 - index, providers.length > 1, parsed, query, fallbacks[index]))
+    )
     return { Results: results.filter((result): result is Result => result !== null), Refinements: refinements }
   }
 }
